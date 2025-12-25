@@ -2,6 +2,7 @@
 #include <SPI.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <HTTPClient.h>
 #include <EEPROM.h>
 #include <time.h>
 #include <stdlib.h>
@@ -52,7 +53,10 @@ constexpr time_t EPOCH_UNINITIALIZED = 0;
 constexpr char AP_SSID[] = "ESP32AP";
 constexpr size_t MAX_SSID_LENGTH = 32;
 constexpr size_t MAX_PASSWORD_LENGTH = 64;
-constexpr uint32_t CREDENTIAL_MAGIC = 0x54484D44;
+constexpr uint32_t CREDENTIAL_MAGIC = 0x54484D45; // Changed magic for layout update
+constexpr char EDGE_SERVER_URL[] = "http://192.168.10.103:8081/api/climate/save";
+constexpr unsigned long EDGE_POST_INTERVAL_MS = 15UL * 60UL * 1000UL;
+constexpr unsigned long EDGE_POST_TIMEOUT_MS = 5000UL;
 
 // PROGMEM strings for web server
 constexpr char HTTP_HEADER_HTML[] PROGMEM = "text/html";
@@ -68,6 +72,7 @@ struct CredentialStorage {
   uint32_t magic;
   char ssid[MAX_SSID_LENGTH + 1];
   char password[MAX_PASSWORD_LENGTH + 1];
+  float humidityOffset;
 };
 
 constexpr size_t EEPROM_SIZE = sizeof(CredentialStorage);
@@ -174,6 +179,7 @@ void initCredentialStorage() {
   EEPROM.get(0, credentialStorage);
   if (credentialStorage.magic != CREDENTIAL_MAGIC) {
     memset(&credentialStorage, 0, sizeof(credentialStorage));
+    credentialStorage.humidityOffset = -10.0f; // Default offset
   }
 
   initialized = true;
@@ -183,18 +189,20 @@ bool credentialsAvailable() {
   return credentialStorage.ssid[0] != '\0';
 }
 
-bool saveCredentialsToEeprom(const String &ssid, const String &password) {
+bool saveCredentialsToEeprom(const String &ssid, const String &password, float humidOffset) {
   CredentialStorage nextCredentials{};
   nextCredentials.magic = CREDENTIAL_MAGIC;
   memset(nextCredentials.ssid, 0, sizeof(nextCredentials.ssid));
   memset(nextCredentials.password, 0, sizeof(nextCredentials.password));
   ssid.toCharArray(nextCredentials.ssid, sizeof(nextCredentials.ssid));
   password.toCharArray(nextCredentials.password, sizeof(nextCredentials.password));
+  nextCredentials.humidityOffset = humidOffset;
 
   // 変更がない場合は書き込まない（EEPROM/Flash寿命対策）
   if (credentialStorage.magic == nextCredentials.magic &&
       strcmp(credentialStorage.ssid, nextCredentials.ssid) == 0 &&
-      strcmp(credentialStorage.password, nextCredentials.password) == 0) {
+      strcmp(credentialStorage.password, nextCredentials.password) == 0 &&
+      abs(credentialStorage.humidityOffset - nextCredentials.humidityOffset) < 0.01f) {
     return true;  // 変更なし
   }
 
@@ -343,6 +351,8 @@ void handleRoot() {
   page += htmlEscape(credentialStorage.ssid);
   page += F("\"></label><label>Password<input type=\"password\" name=\"password\" maxlength=\"64\" value=\"");
   page += htmlEscape(credentialStorage.password);
+  page += F("\"></label><label>Humidity Offset (%)<input type=\"number\" step=\"0.1\" name=\"humid_offset\" value=\"");
+  page += String(credentialStorage.humidityOffset, 1);
   page += F("\"></label><button type=\"submit\">Save</button></form>");
 
   page += F("<form method=\"POST\" action=\"/clear\"><input type=\"hidden\" name=\"csrf\" value=\"");
@@ -403,7 +413,12 @@ void handleSave() {
     return;
   }
 
-  if (!saveCredentialsToEeprom(ssid, password)) {
+  float humidOffset = -7.0f; // default fallback
+  if (configServer.hasArg("humid_offset")) {
+    humidOffset = configServer.arg("humid_offset").toFloat();
+  }
+
+  if (!saveCredentialsToEeprom(ssid, password, humidOffset)) {
     configServer.send(500, FPSTR(HTTP_HEADER_PLAIN), FPSTR(ERR_SAVE_FAILED));
     return;
   }
@@ -473,7 +488,7 @@ struct ComfortMetrics {
   float comfortIndex;
 };
 
-constexpr unsigned long DEFAULT_DELAY_MS = 100UL;
+constexpr unsigned long DEFAULT_DELAY_MS = 1000UL;
 constexpr uint8_t HEADER_Y = 0;
 constexpr uint8_t HEADER_LINE_Y = 15;
 constexpr uint8_t COL_LEFT_X = 80;
@@ -504,6 +519,7 @@ constexpr float DISCOMFORT_CONSTANT = 46.3f;
 
 unsigned long delayTime = DEFAULT_DELAY_MS;
 unsigned long lastLoopMs = 0;
+unsigned long lastEdgePostMs = 0;
 
 
 float computeSaturationVaporPressureCelsius(float tempC) {
@@ -540,7 +556,7 @@ ComfortMetrics computeComfortMetrics(const SensorData &data) {
 SensorData readSensorData() {
   SensorData data;
   data.temperature = bme.readTemperature();
-  data.humidity = bme.readHumidity();
+  data.humidity = bme.readHumidity() + credentialStorage.humidityOffset;
   data.pressure = bme.readPressure() / 100.0F;
 
   // NaN検出 (センサーエラー時)
@@ -663,6 +679,36 @@ void renderWeatherScreen(const SensorData &data, const ComfortMetrics metrics) {
   scrubRandomPixel();  // display()前に呼び出し
   oled.display();  // 一度だけ呼び出す
 }
+
+String buildClimatePayload(const SensorData &data, const ComfortMetrics &metrics) {
+  char payload[196];
+  snprintf(payload, sizeof(payload),
+           "{\"temperature\":%.1f,\"humidity\":%.1f,\"absolute_humidity\":%.1f,\"discomfort_index\":%.1f,\"vpd\":%.2f}",
+           data.temperature, data.humidity, metrics.absoluteHumidity, metrics.comfortIndex,
+           metrics.vaporPressureDeficit);
+  return String(payload);
+}
+
+bool postClimateData(const SensorData &data, const ComfortMetrics &metrics) {
+  if (WiFi.status() != WL_CONNECTED) {
+    return false;
+  }
+
+  WiFiClient client;
+  HTTPClient http;
+  http.setTimeout(EDGE_POST_TIMEOUT_MS);
+
+  if (!http.begin(client, EDGE_SERVER_URL)) {
+    return false;
+  }
+
+  http.addHeader("Content-Type", "application/json");
+  const String payload = buildClimatePayload(data, metrics);
+  const int status = http.POST(payload);
+  http.end();
+
+  return status >= 200 && status < 300;
+}
 }  // namespace
 
 void initializeSensors() {
@@ -766,9 +812,18 @@ void loop() {
     }
   }
 
-  if (bmeAvailable && oledAvailable) {
+  if (bmeAvailable) {
     SensorData data = readSensorData();
     const ComfortMetrics metrics = computeComfortMetrics(data);
-    renderWeatherScreen(data, metrics);  // scrubRandomPixel()とdisplay()は内部で呼ばれる
+
+    if (oledAvailable) {
+      renderWeatherScreen(data, metrics);  // scrubRandomPixel()とdisplay()は内部で呼ばれる
+    }
+
+    const unsigned long nowMs = millis();
+    if ((nowMs - lastEdgePostMs) >= EDGE_POST_INTERVAL_MS) {
+      postClimateData(data, metrics);
+      lastEdgePostMs = nowMs;
+    }
   }
 }
