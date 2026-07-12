@@ -1,13 +1,28 @@
-# WBGT 表示追加仕様
+# OLED ヘッダー IP アドレス表示仕様
 
-## OLED レイアウト
+## OLED ヘッダー
+
+| Condition | Position | Text size | Format |
+| --------- | -------- | --------- | ------ |
+| STA connected | x=0, y=0 | 1 | `<WiFi.localIP()>` |
+| STA disconnected | x=0, y=0 | 1 | Empty |
+| Date and time | x=0, y=8 | 1 | Existing format |
+
+`Meteorology Info` と `http://` は表示しない。STA 接続の判定には `WiFi.status() == WL_CONNECTED` を使用する。IPv4 アドレスは最大 15 文字であり、文字サイズ 1 の OLED 横幅 128px に収まる。
+
+## OLED 計測値レイアウト
 
 | Item | Position | Text size | Format |
 | ---- | -------- | --------- | ------ |
-| WBGT | 従来の DI 表示位置（左下） | ラベル: 1、数値: 2 | `WBGT xx.x` |
-| DI | 気圧の直下（右列） | 1 | `DI xx.x` |
+| Temperature | 左列 y=16 | ラベル: 1、値: 2 | `T:xx.x` |
+| WBGT | 左列 y=32 | ラベル: 1、値: 2 | `WBGT:xx.x` |
+| DI | 左列 y=48 | ラベル: 1、値: 2 | `DI:xx.x` |
+| Pressure | 右列 y=16 | 1 | `xxxxhPa` |
+| Relative humidity | 右列 y=28 | 1 | `xx.x%` |
+| Absolute humidity | 右列 y=40 | 1 | `xx.xg/m3` |
+| VPD | 右列 y=52 | 1 | `x.xkPa` |
 
-DI はラベルと数値を改行せずに描画する。気圧が y=48 のため、DI は y=56 に描画する。
+左列は x=0、右列は x=80、列の区切り線は x=78 とする。左列は項目名を文字サイズ 1、値を文字サイズ 2 とする。右列は項目名を省略し、値と単位を文字サイズ 1 で表示する。
 
 ## WBGT 計算
 

@@ -84,7 +84,6 @@ constexpr size_t EEPROM_SIZE = sizeof(CredentialStorage);
 constexpr char LABEL_TEMP[] PROGMEM = "T:";
 constexpr char LABEL_HUMID[] PROGMEM = "RH:";
 constexpr char LABEL_PRESSURE[] PROGMEM = "Pressure";
-constexpr char LABEL_HEADER[] PROGMEM = "Meteorology Info";
 constexpr char DATE_FORMAT[] PROGMEM = "%Y/%m/%d %a %H:%M";
 constexpr uint8_t HEADER_TEXT_SIZE = 1;
 constexpr uint8_t METRIC_TEXT_SIZE = 2;
@@ -192,7 +191,7 @@ namespace
     if (credentialStorage.magic != CREDENTIAL_MAGIC)
     {
       memset(&credentialStorage, 0, sizeof(credentialStorage));
-      credentialStorage.humidityOffset = -0.0f; // Default offset
+      credentialStorage.humidityOffset = -7.0f; // Default offset
     }
 
     initialized = true;
@@ -466,7 +465,7 @@ namespace
       return;
     }
 
-    float humidOffset = -7.0f; // default fallback
+    float humidOffset = 0.0f; // default fallback
     if (configServer.hasArg("humid_offset"))
     {
       humidOffset = configServer.arg("humid_offset").toFloat();
@@ -556,21 +555,21 @@ namespace
   constexpr unsigned long DEFAULT_DELAY_MS = 1000UL;
   constexpr uint8_t HEADER_Y = 0;
   constexpr uint8_t HEADER_LINE_Y = 15;
-  constexpr uint8_t COL_LEFT_X = 80;
-  constexpr uint8_t COL_RIGHT_X = 64;
-  constexpr uint8_t ROW_TOP_Y = 30;
-  constexpr uint8_t ROW_BOTTOM_Y = 40;
-  constexpr uint8_t ROW_PRESSURE_Y = 48;
+  constexpr uint8_t COL_LEFT_X = 0;
+  constexpr uint8_t COL_RIGHT_X = 80;
+  constexpr uint8_t LEFT_TEMPERATURE_Y = 16;
+  constexpr uint8_t LEFT_WBGT_Y = 32;
+  constexpr uint8_t LEFT_DI_Y = 48;
+  constexpr uint8_t RIGHT_PRESSURE_Y = 16;
+  constexpr uint8_t RIGHT_HUMIDITY_Y = 28;
+  constexpr uint8_t RIGHT_ABSOLUTE_HUMIDITY_Y = 40;
+  constexpr uint8_t RIGHT_VPD_Y = 52;
+  constexpr uint8_t DIVIDER_LINE_X = 78;
   constexpr uint8_t DATE_Y = 8;
   constexpr uint8_t HEAT_INDEX_Y = 36;
   constexpr size_t DATE_BUFFER_SIZE = 21; // フォーマット長(20) + 終端
-  constexpr uint8_t METRICS_AH_Y = 16;
-  constexpr uint8_t METRICS_VPD_Y = 32;
-  constexpr uint8_t METRICS_WBGT_Y = 48;
-  constexpr uint8_t DI_Y = 56;
   constexpr uint8_t DIVIDER_LINE_TOP_Y = 24;
   constexpr uint8_t DIVIDER_LINE_BOTTOM_Y = 64;
-  constexpr uint8_t DIVIDER_LINE_X_OFFSET = 2;
   constexpr float KELVIN_OFFSET = 273.15f;
   constexpr float ABS_HUMID_NUMERATOR = 216.7f;
   constexpr float SATURATION_COEFF_A = 17.67f;
@@ -727,75 +726,55 @@ namespace
   void drawHeader()
   {
     oled.setTextSize(HEADER_TEXT_SIZE);
-    oled.println(FPSTR(LABEL_HEADER));
+    oled.setCursor(0, HEADER_Y);
+    if (WiFi.status() == WL_CONNECTED)
+    {
+      oled.println(WiFi.localIP());
+    }
     drawDateLine(0, DATE_Y);
     oled.drawLine(0, HEADER_LINE_Y, OLED_WIDTH, HEADER_LINE_Y, WHITE);
   }
 
-  void drawTemperature(uint8_t x, uint8_t y, float temp)
-  {
-    oled.setTextSize(LABEL_TEXT_SIZE);
-    oled.setCursor(x, y);
-    oled.print(temp, 1);
-    oled.println("C");
-  }
-
-  void drawPressure(uint8_t x, uint8_t y, float press)
-  {
-    oled.setTextSize(LABEL_TEXT_SIZE);
-    oled.setCursor(x, y);
-    oled.print(press, 0);
-    oled.println("hPa");
-  }
-
-  void drawHumid(uint8_t x, uint8_t y, float humid)
-  {
-    oled.setTextSize(LABEL_TEXT_SIZE);
-    oled.setCursor(x, y);
-    oled.print(humid, 1);
-    oled.println("%");
-  }
-
   void drawSensorLines(const SensorData &data, const ComfortMetrics &metrics)
   {
-    drawTemperature(COL_LEFT_X, ROW_TOP_Y, data.temperature);
-    drawHumid(COL_LEFT_X, ROW_BOTTOM_Y, data.humidity);
-    drawPressure(COL_LEFT_X, ROW_PRESSURE_Y, data.pressure);
-    oled.setCursor(COL_LEFT_X, DI_Y);
+    oled.setCursor(COL_LEFT_X, LEFT_TEMPERATURE_Y);
     oled.setTextSize(1);
-    oled.print("DI ");
-    oled.print(metrics.comfortIndex, 1);
-  }
-
-  void drawMetrics(const ComfortMetrics &metrics)
-  {
-    oled.setCursor(0, METRICS_AH_Y);
-    oled.setTextSize(1);
-    oled.print("AH:");
+    oled.print("T:");
     oled.setTextSize(2);
-    oled.print(metrics.absoluteHumidity, 1);
-    oled.setTextSize(1);
-    oled.print("g/m^3");
-    oled.println();
+    oled.print(data.temperature, 1);
 
-    oled.setCursor(0, METRICS_VPD_Y);
-    oled.setTextSize(1);
-    oled.print("VPD:");
-    oled.setTextSize(2);
-    oled.print(metrics.vaporPressureDeficit, 1);
-    oled.setTextSize(1);
-    oled.println("kPa");
-
-    oled.setCursor(0, METRICS_WBGT_Y);
+    oled.setCursor(COL_LEFT_X, LEFT_WBGT_Y);
     oled.setTextSize(1);
     oled.print("WBGT:");
     oled.setTextSize(2);
     oled.print(metrics.wbgt, 1);
-    oled.setTextSize(1);
-    oled.println();
 
-    oled.drawLine(COL_LEFT_X - DIVIDER_LINE_X_OFFSET, DIVIDER_LINE_TOP_Y,
-                  COL_LEFT_X - DIVIDER_LINE_X_OFFSET, DIVIDER_LINE_BOTTOM_Y, WHITE);
+    oled.setCursor(COL_LEFT_X, LEFT_DI_Y);
+    oled.setTextSize(1);
+    oled.print("DI:");
+    oled.setTextSize(2);
+    oled.print(metrics.comfortIndex, 1);
+
+    oled.setTextSize(1);
+    oled.setCursor(COL_RIGHT_X, RIGHT_PRESSURE_Y);
+    oled.print(data.pressure, 0);
+    oled.print("hPa");
+
+    oled.setCursor(COL_RIGHT_X, RIGHT_HUMIDITY_Y);
+    oled.print(data.humidity, 1);
+    oled.print('%');
+
+    oled.setCursor(COL_RIGHT_X, RIGHT_ABSOLUTE_HUMIDITY_Y);
+    oled.print(metrics.absoluteHumidity, 1);
+    oled.print("g/m3");
+
+    oled.setCursor(COL_RIGHT_X, RIGHT_VPD_Y);
+    oled.print(metrics.vaporPressureDeficit, 1);
+    oled.print("kPa");
+
+    oled.setTextSize(1);
+    oled.drawLine(DIVIDER_LINE_X, DIVIDER_LINE_TOP_Y,
+                  DIVIDER_LINE_X, DIVIDER_LINE_BOTTOM_Y, WHITE);
   }
 
   void scrubRandomPixel()
@@ -815,7 +794,6 @@ namespace
     prepareCanvas();
     drawHeader();
     drawSensorLines(data, metrics);
-    drawMetrics(metrics);
     scrubRandomPixel(); // display()前に呼び出し
     oled.display();     // 一度だけ呼び出す
   }
