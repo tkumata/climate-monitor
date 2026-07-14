@@ -1,35 +1,87 @@
-# OLED ヘッダー IP アドレス表示仕様
+# New Relic Metric API 送信仕様
 
-## OLED ヘッダー
+## 設定項目
 
-| Condition | Position | Text size | Format |
-| --------- | -------- | --------- | ------ |
-| STA connected | x=0, y=0 | 1 | `<WiFi.localIP()>` |
-| STA disconnected | x=0, y=0 | 1 | Empty |
-| Date and time | x=0, y=8 | 1 | Existing format |
+| Item | Input | Validation | Persistence |
+| ---- | ----- | ---------- | ----------- |
+| deviceId | Text | ASCII letters and digits, 1-32 characters | EEPROM |
+| location | Select | `home`, `apartment`, `outdoor`, `office` | EEPROM |
+| Ingest Key | Password | 1-64 characters when newly entered | EEPROM |
 
-`Meteorology Info` と `http://` は表示しない。STA 接続の判定には `WiFi.status() == WL_CONNECTED` を使用する。IPv4 アドレスは最大 15 文字であり、文字サイズ 1 の OLED 横幅 128px に収まる。
+Ingest Key 入力が空の場合、保存済みのキーを維持する。保存済みキーは HTML の `value` に設定せず、設定済みかどうかだけを表示する。deviceId または location が未設定でも Wi-Fi 設定は保存できるが、New Relic 送信は行わない。
 
-## OLED 計測値レイアウト
+## EEPROM マイグレーション
 
-| Item | Position | Text size | Format |
-| ---- | -------- | --------- | ------ |
-| Temperature | 左列 y=16 | ラベル: 1、値: 2 | `T:xx.x` |
-| WBGT | 左列 y=32 | ラベル: 1、値: 2 | `WBGT:xx.x` |
-| DI | 左列 y=48 | ラベル: 1、値: 2 | `DI:xx.x` |
-| Pressure | 右列 y=16 | 1 | `xxxxhPa` |
-| Relative humidity | 右列 y=28 | 1 | `xx.x%` |
-| Absolute humidity | 右列 y=40 | 1 | `xx.xg/m3` |
-| VPD | 右列 y=52 | 1 | `x.xkPa` |
+旧レイアウトの magic を検出した場合、SSID、パスワード、湿度補正値を新レイアウトへコピーする。追加項目は空の状態で初期化し、新レイアウトの magic で一度だけ保存する。新旧いずれの magic でもない場合は、全項目を初期化して湿度補正値だけを既定値 `-7.0` とする。
 
-左列は x=0、右列は x=80、列の区切り線は x=78 とする。左列は項目名を文字サイズ 1、値を文字サイズ 2 とする。右列は項目名を省略し、値と単位を文字サイズ 1 で表示する。
+## 送信条件
 
-## WBGT 計算
+| Condition | Required state |
+| --------- | -------------- |
+| deviceId | Valid and non-empty |
+| location | One of the four allowed values |
+| Ingest Key | Non-empty |
+| Wi-Fi | `WiFi.status() == WL_CONNECTED` |
+| Time | `timeSynced == true` and epoch is initialized |
+| Metrics | All eight values are finite |
 
-1. 相対湿度を 0〜100% に丸める。
-2. 飽和水蒸気圧を `6.112 × exp(17.62 × T / (243.12 + T))` hPa で求める。
-3. 実際の水蒸気圧を `相対湿度 / 100 × 飽和水蒸気圧` で求める。
-4. 湿球温度の探索範囲を -50°C から気温までとし、50 回の二分法で湿球温度を求める。乾湿計係数には湿球温度と気圧を用いる。
-5. WBGT を `0.7 × 湿球温度 + 0.3 × 気温` で求める。
+インターネット到達性は New Relic ホストの DNS 解決、TLS 接続、HTTP 応答によって確認する。別ホストへの疎通確認は行わない。
 
-有限でない気温・相対湿度・気圧、または 0 以下の気圧では WBGT を NaN とする。OLED では既存の `print` 挙動に従って表示する。
+## HTTP リクエスト
+
+| Item | Value |
+| ---- | ----- |
+| Method | `POST` |
+| URL | `https://metric-api.newrelic.com/metric/v1` |
+| Content-Type | `application/json` |
+| Api-Key | EEPROM に保存された Ingest Key |
+| Timeout | 5000 ms |
+| Success | HTTP status 200-299 |
+
+TLS では New Relic エンドポイントの信頼チェーンを検証する。`setInsecure()` は使用しない。
+
+## JSON ペイロード
+
+```json
+[
+  {
+    "common": {
+      "timestamp": 1783987200,
+      "attributes": {
+        "deviceId": "weathernode01",
+        "location": "outdoor",
+        "sensor": "BME280"
+      }
+    },
+    "metrics": [
+      {"name":"home.weather.temperature","type":"gauge","value":27.4},
+      {"name":"home.weather.humidity","type":"gauge","value":68.2},
+      {"name":"home.weather.absoluteHumidity","type":"gauge","value":17.5},
+      {"name":"home.weather.pressure","type":"gauge","value":1007.3},
+      {"name":"home.weather.altitude","type":"gauge","value":49.8},
+      {"name":"home.weather.vpd","type":"gauge","value":1.19},
+      {"name":"home.weather.wbgt","type":"gauge","value":24.8},
+      {"name":"home.weather.discomfortIndex","type":"gauge","value":76.0}
+    ]
+  }
+]
+```
+
+`timestamp` は New Relic の予約フィールドであるため attributes には重複して格納しない。
+
+## メトリクス
+
+| Metric name | Source | Unit |
+| ----------- | ------ | ---- |
+| `home.weather.temperature` | `SensorData.temperature` | °C |
+| `home.weather.humidity` | `SensorData.humidity` | %RH |
+| `home.weather.absoluteHumidity` | `ComfortMetrics.absoluteHumidity` | g/m³ |
+| `home.weather.pressure` | `SensorData.pressure` | hPa |
+| `home.weather.altitude` | `SensorData.altitude` | m |
+| `home.weather.vpd` | `ComfortMetrics.vaporPressureDeficit` | kPa |
+| `home.weather.wbgt` | `ComfortMetrics.wbgt` | °C |
+| `home.weather.discomfortIndex` | `ComfortMetrics.comfortIndex` | index |
+
+## 既存 OLED 仕様
+
+OLED の IP アドレス、日時、気温、WBGT、DI、気圧、相対湿度、絶対湿度、VPD の描画位置、文字サイズ、計算式は変更しない。
