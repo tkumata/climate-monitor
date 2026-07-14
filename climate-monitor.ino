@@ -1,6 +1,7 @@
 #include <Wire.h>
 #include <SPI.h>
 #include <WiFi.h>
+#include <NetworkClientSecure.h>
 #include <WebServer.h>
 #include <HTTPClient.h>
 #include <EEPROM.h>
@@ -53,10 +54,45 @@ constexpr time_t EPOCH_UNINITIALIZED = 0;
 constexpr char AP_SSID[] = "ESP32AP";
 constexpr size_t MAX_SSID_LENGTH = 32;
 constexpr size_t MAX_PASSWORD_LENGTH = 64;
-constexpr uint32_t CREDENTIAL_MAGIC = 0x54484D45; // Changed magic for layout update
+constexpr size_t MAX_DEVICE_ID_LENGTH = 32;
+constexpr size_t MAX_LOCATION_LENGTH = 9;
+constexpr size_t MAX_INGEST_KEY_LENGTH = 64;
+constexpr uint32_t LEGACY_CREDENTIAL_MAGIC = 0x54484D45;
+constexpr uint32_t CREDENTIAL_MAGIC = 0x54484D46;
 constexpr char EDGE_SERVER_URL[] = "http://192.168.10.103:8081/api/climate/save";
 constexpr unsigned long EDGE_POST_INTERVAL_MS = 15UL * 60UL * 1000UL;
 constexpr unsigned long EDGE_POST_TIMEOUT_MS = 5000UL;
+constexpr char NEW_RELIC_URL[] = "https://metric-api.newrelic.com/metric/v1";
+constexpr unsigned long NEW_RELIC_POST_INTERVAL_MS = 5UL * 60UL * 1000UL;
+constexpr unsigned long NEW_RELIC_POST_TIMEOUT_MS = 5000UL;
+constexpr char SENSOR_NAME[] = "BME280";
+constexpr char LOCATION_HOME[] = "home";
+constexpr char LOCATION_APARTMENT[] = "apartment";
+constexpr char LOCATION_OUTDOOR[] = "outdoor";
+constexpr char LOCATION_OFFICE[] = "office";
+
+constexpr char DIGICERT_GLOBAL_ROOT_G2[] PROGMEM = R"EOF(-----BEGIN CERTIFICATE-----
+MIIDjjCCAnagAwIBAgIQAzrx5qcRqaC7KGSxHQn65TANBgkqhkiG9w0BAQsFADBh
+MQswCQYDVQQGEwJVUzEVMBMGA1UEChMMRGlnaUNlcnQgSW5jMRkwFwYDVQQLExB3
+d3cuZGlnaWNlcnQuY29tMSAwHgYDVQQDExdEaWdpQ2VydCBHbG9iYWwgUm9vdCBH
+MjAeFw0xMzA4MDExMjAwMDBaFw0zODAxMTUxMjAwMDBaMGExCzAJBgNVBAYTAlVT
+MRUwEwYDVQQKEwxEaWdpQ2VydCBJbmMxGTAXBgNVBAsTEHd3dy5kaWdpY2VydC5j
+b20xIDAeBgNVBAMTF0RpZ2lDZXJ0IEdsb2JhbCBSb290IEcyMIIBIjANBgkqhkiG
+9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuzfNNNx7a8myaJCtSnX/RrohCgiN9RlUyfuI
+2/Ou8jqJkTx65qsGGmvPrC3oXgkkRLpimn7Wo6h+4FR1IAWsULecYxpsMNzaHxmx
+1x7e/dfgy5SDN67sH0NO3Xss0r0upS/kqbitOtSZpLYl6ZtrAGCSYP9PIUkY92eQ
+q2EGnI/yuum06ZIya7XzV+hdG82MHauVBJVJ8zUtluNJbd134/tJS7SsVQepj5Wz
+tCO7TG1F8PapspUwtP1MVYwnSlcUfIKdzXOS0xZKBgyMUNGPHgm+F6HmIcr9g+UQ
+vIOlCsRnKPZzFBQ9RnbDhxSJITRNrw9FDKZJobq7nMWxM4MphQIDAQABo0IwQDAP
+BgNVHRMBAf8EBTADAQH/MA4GA1UdDwEB/wQEAwIBhjAdBgNVHQ4EFgQUTiJUIBiV
+5uNu5g/6+rkS7QYXjzkwDQYJKoZIhvcNAQELBQADggEBAGBnKJRvDkhj6zHd6mcY
+1Yl9PMWLSn/pvtsrF9+wX3N3KjITOYFnQoQj8kVnNeyIv/iPsGEMNKSuIEyExtv4
+NeF22d+mQrvHRAiGfzZ0JFrabA0UWTW98kndth/Jsw1HKj2ZL7tcu7XUIOGZX1NG
+Fdtom/DzMNU+MeKNhJ7jitralj41E6Vf8PlwUHBHQRFXGU7Aj64GxJUTFy8bJZ91
+8rGOmaFvE7FBcf6IKshPECBV1/MUReXgRPTqh5Uykw7+U0b6LJ3/iyK5S9kJRaTe
+pLiaWN0bfVKfjllDiIGknibVb63dDcY3fe0Dkhvld1927jyNxF1WW6LZZm6zNTfl
+MrY=
+-----END CERTIFICATE-----)EOF";
 
 // PROGMEM strings for web server
 constexpr char HTTP_HEADER_HTML[] PROGMEM = "text/html";
@@ -64,9 +100,19 @@ constexpr char HTTP_HEADER_PLAIN[] PROGMEM = "text/plain";
 constexpr char ERR_MISSING_PARAMS[] PROGMEM = "Missing ssid or password";
 constexpr char ERR_SSID_REQUIRED[] PROGMEM = "SSID is required";
 constexpr char ERR_INPUT_TOO_LONG[] PROGMEM = "Input too long";
+constexpr char ERR_INVALID_DEVICE_ID[] PROGMEM = "Device ID must contain only ASCII letters and digits";
+constexpr char ERR_INVALID_LOCATION[] PROGMEM = "Invalid location";
 constexpr char ERR_SAVE_FAILED[] PROGMEM = "Failed to save credentials";
 constexpr char ERR_CLEAR_FAILED[] PROGMEM = "Failed to clear credentials";
 constexpr char ERR_NOT_FOUND[] PROGMEM = "Not found";
+
+struct LegacyCredentialStorage
+{
+  uint32_t magic;
+  char ssid[MAX_SSID_LENGTH + 1];
+  char password[MAX_PASSWORD_LENGTH + 1];
+  float humidityOffset;
+};
 
 struct CredentialStorage
 {
@@ -74,6 +120,9 @@ struct CredentialStorage
   char ssid[MAX_SSID_LENGTH + 1];
   char password[MAX_PASSWORD_LENGTH + 1];
   float humidityOffset;
+  char deviceId[MAX_DEVICE_ID_LENGTH + 1];
+  char location[MAX_LOCATION_LENGTH + 1];
+  char ingestKey[MAX_INGEST_KEY_LENGTH + 1];
 };
 
 constexpr size_t EEPROM_SIZE = sizeof(CredentialStorage);
@@ -178,6 +227,48 @@ namespace
     return escaped;
   }
 
+  bool isValidDeviceId(const String &deviceId)
+  {
+    if (deviceId.length() > MAX_DEVICE_ID_LENGTH)
+    {
+      return false;
+    }
+
+    for (size_t i = 0; i < deviceId.length(); ++i)
+    {
+      const char c = deviceId[i];
+      if (!((c >= '0' && c <= '9') ||
+            (c >= 'A' && c <= 'Z') ||
+            (c >= 'a' && c <= 'z')))
+      {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  bool isAllowedLocation(const char *location)
+  {
+    return strcmp(location, LOCATION_HOME) == 0 ||
+           strcmp(location, LOCATION_APARTMENT) == 0 ||
+           strcmp(location, LOCATION_OUTDOOR) == 0 ||
+           strcmp(location, LOCATION_OFFICE) == 0;
+  }
+
+  bool isValidLocation(const String &location)
+  {
+    return location.length() == 0 || isAllowedLocation(location.c_str());
+  }
+
+  void terminateCredentialStrings(CredentialStorage &credentials)
+  {
+    credentials.ssid[MAX_SSID_LENGTH] = '\0';
+    credentials.password[MAX_PASSWORD_LENGTH] = '\0';
+    credentials.deviceId[MAX_DEVICE_ID_LENGTH] = '\0';
+    credentials.location[MAX_LOCATION_LENGTH] = '\0';
+    credentials.ingestKey[MAX_INGEST_KEY_LENGTH] = '\0';
+  }
+
   void initCredentialStorage()
   {
     static bool initialized = false;
@@ -187,11 +278,33 @@ namespace
     }
 
     EEPROM.begin(EEPROM_SIZE);
-    EEPROM.get(0, credentialStorage);
-    if (credentialStorage.magic != CREDENTIAL_MAGIC)
+
+    uint32_t storedMagic = 0;
+    EEPROM.get(0, storedMagic);
+    if (storedMagic == CREDENTIAL_MAGIC)
+    {
+      EEPROM.get(0, credentialStorage);
+      terminateCredentialStrings(credentialStorage);
+    }
+    else if (storedMagic == LEGACY_CREDENTIAL_MAGIC)
+    {
+      LegacyCredentialStorage legacyCredentials{};
+      EEPROM.get(0, legacyCredentials);
+      legacyCredentials.ssid[MAX_SSID_LENGTH] = '\0';
+      legacyCredentials.password[MAX_PASSWORD_LENGTH] = '\0';
+
+      memset(&credentialStorage, 0, sizeof(credentialStorage));
+      credentialStorage.magic = CREDENTIAL_MAGIC;
+      memcpy(credentialStorage.ssid, legacyCredentials.ssid, sizeof(credentialStorage.ssid));
+      memcpy(credentialStorage.password, legacyCredentials.password, sizeof(credentialStorage.password));
+      credentialStorage.humidityOffset = legacyCredentials.humidityOffset;
+      EEPROM.put(0, credentialStorage);
+      EEPROM.commit();
+    }
+    else
     {
       memset(&credentialStorage, 0, sizeof(credentialStorage));
-      credentialStorage.humidityOffset = -7.0f; // Default offset
+      credentialStorage.humidityOffset = 0.0f; // Default offset
     }
 
     initialized = true;
@@ -202,21 +315,34 @@ namespace
     return credentialStorage.ssid[0] != '\0';
   }
 
-  bool saveCredentialsToEeprom(const String &ssid, const String &password, float humidOffset)
+  bool saveCredentialsToEeprom(const String &ssid, const String &password, float humidOffset,
+                               const String &deviceId, const String &location, const String &ingestKey)
   {
-    CredentialStorage nextCredentials{};
+    CredentialStorage nextCredentials = credentialStorage;
     nextCredentials.magic = CREDENTIAL_MAGIC;
     memset(nextCredentials.ssid, 0, sizeof(nextCredentials.ssid));
     memset(nextCredentials.password, 0, sizeof(nextCredentials.password));
+    memset(nextCredentials.deviceId, 0, sizeof(nextCredentials.deviceId));
+    memset(nextCredentials.location, 0, sizeof(nextCredentials.location));
     ssid.toCharArray(nextCredentials.ssid, sizeof(nextCredentials.ssid));
     password.toCharArray(nextCredentials.password, sizeof(nextCredentials.password));
     nextCredentials.humidityOffset = humidOffset;
+    deviceId.toCharArray(nextCredentials.deviceId, sizeof(nextCredentials.deviceId));
+    location.toCharArray(nextCredentials.location, sizeof(nextCredentials.location));
+    if (ingestKey.length() > 0)
+    {
+      memset(nextCredentials.ingestKey, 0, sizeof(nextCredentials.ingestKey));
+      ingestKey.toCharArray(nextCredentials.ingestKey, sizeof(nextCredentials.ingestKey));
+    }
 
     // 変更がない場合は書き込まない（EEPROM/Flash寿命対策）
     if (credentialStorage.magic == nextCredentials.magic &&
         strcmp(credentialStorage.ssid, nextCredentials.ssid) == 0 &&
         strcmp(credentialStorage.password, nextCredentials.password) == 0 &&
-        abs(credentialStorage.humidityOffset - nextCredentials.humidityOffset) < 0.01f)
+        abs(credentialStorage.humidityOffset - nextCredentials.humidityOffset) < 0.01f &&
+        strcmp(credentialStorage.deviceId, nextCredentials.deviceId) == 0 &&
+        strcmp(credentialStorage.location, nextCredentials.location) == 0 &&
+        strcmp(credentialStorage.ingestKey, nextCredentials.ingestKey) == 0)
     {
       return true; // 変更なし
     }
@@ -376,6 +502,20 @@ namespace
     timeSynced = syncTimeFromNtp();
   }
 
+  void appendLocationOption(String &page, const char *location)
+  {
+    page += F("<option value=\"");
+    page += location;
+    page += '"';
+    if (strcmp(credentialStorage.location, location) == 0)
+    {
+      page += F(" selected");
+    }
+    page += '>';
+    page += location;
+    page += F("</option>");
+  }
+
   void handleRoot()
   {
     initCredentialStorage();
@@ -384,8 +524,8 @@ namespace
     csrfToken = generateCsrfToken();
 
     String page;
-    page.reserve(700);
-    page += F("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>TempHumid Wi-Fi</title><style>body{font-family:sans-serif;margin:24px;}form{display:flex;flex-direction:column;gap:12px;max-width:320px;margin-bottom:16px;}label{display:flex;flex-direction:column;font-weight:600;}input{padding:8px;font-size:16px;}button{padding:10px;font-size:16px;}button.danger{background:#c62828;color:#fff;border:none;}button.secondary{background:#f0f0f0;border:1px solid #ccc;}</style></head><body>");
+    page.reserve(1400);
+    page += F("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>TempHumid Wi-Fi</title><style>body{font-family:sans-serif;margin:24px;}form{display:flex;flex-direction:column;gap:12px;max-width:320px;margin-bottom:16px;}label{display:flex;flex-direction:column;font-weight:600;}input,select{padding:8px;font-size:16px;}button{padding:10px;font-size:16px;}button.danger{background:#c62828;color:#fff;border:none;}button.secondary{background:#f0f0f0;border:1px solid #ccc;}</style></head><body>");
     page += F("<h1>Wi-Fi Settings</h1><form method=\"POST\" action=\"/save\"><input type=\"hidden\" name=\"csrf\" value=\"");
     page += csrfToken;
     page += F("\"><label>SSID<input type=\"text\" name=\"ssid\" maxlength=\"32\" required value=\"");
@@ -394,6 +534,15 @@ namespace
     page += htmlEscape(credentialStorage.password);
     page += F("\"></label><label>Humidity Offset (%)<input type=\"number\" step=\"0.1\" name=\"humid_offset\" value=\"");
     page += String(credentialStorage.humidityOffset, 1);
+    page += F("\"></label><h2>New Relic Settings</h2><label>Device ID<input type=\"text\" name=\"device_id\" maxlength=\"32\" pattern=\"[A-Za-z0-9]+\" value=\"");
+    page += htmlEscape(credentialStorage.deviceId);
+    page += F("\"></label><label>Location<select name=\"location\"><option value=\"\">Not selected</option>");
+    appendLocationOption(page, LOCATION_HOME);
+    appendLocationOption(page, LOCATION_APARTMENT);
+    appendLocationOption(page, LOCATION_OUTDOOR);
+    appendLocationOption(page, LOCATION_OFFICE);
+    page += F("</select></label><label>Ingest Key<input type=\"password\" name=\"ingest_key\" maxlength=\"64\" autocomplete=\"new-password\" placeholder=\"");
+    page += credentialStorage.ingestKey[0] != '\0' ? F("Configured (leave blank to keep)") : F("Not configured");
     page += F("\"></label><button type=\"submit\">Save</button></form>");
 
     page += F("<form method=\"POST\" action=\"/clear\"><input type=\"hidden\" name=\"csrf\" value=\"");
@@ -450,8 +599,14 @@ namespace
 
     String ssid = configServer.arg("ssid");
     String password = configServer.arg("password");
+    String deviceId = configServer.arg("device_id");
+    String location = configServer.arg("location");
+    String ingestKey = configServer.arg("ingest_key");
     ssid.trim();
     password.trim();
+    deviceId.trim();
+    location.trim();
+    ingestKey.trim();
 
     if (ssid.length() == 0)
     {
@@ -459,9 +614,22 @@ namespace
       return;
     }
 
-    if (ssid.length() > MAX_SSID_LENGTH || password.length() > MAX_PASSWORD_LENGTH)
+    if (ssid.length() > MAX_SSID_LENGTH || password.length() > MAX_PASSWORD_LENGTH ||
+        ingestKey.length() > MAX_INGEST_KEY_LENGTH)
     {
       configServer.send(400, FPSTR(HTTP_HEADER_PLAIN), FPSTR(ERR_INPUT_TOO_LONG));
+      return;
+    }
+
+    if (!isValidDeviceId(deviceId))
+    {
+      configServer.send(400, FPSTR(HTTP_HEADER_PLAIN), FPSTR(ERR_INVALID_DEVICE_ID));
+      return;
+    }
+
+    if (!isValidLocation(location))
+    {
+      configServer.send(400, FPSTR(HTTP_HEADER_PLAIN), FPSTR(ERR_INVALID_LOCATION));
       return;
     }
 
@@ -471,7 +639,7 @@ namespace
       humidOffset = configServer.arg("humid_offset").toFloat();
     }
 
-    if (!saveCredentialsToEeprom(ssid, password, humidOffset))
+    if (!saveCredentialsToEeprom(ssid, password, humidOffset, deviceId, location, ingestKey))
     {
       configServer.send(500, FPSTR(HTTP_HEADER_PLAIN), FPSTR(ERR_SAVE_FAILED));
       return;
@@ -493,6 +661,11 @@ namespace
     page += F("<h1>Configuration Saved</h1>");
     page += F("<p>SSID: ");
     page += htmlEscape(ssid.c_str());
+    page += F("</p>");
+    page += F("<p>Device ID: ");
+    page += deviceId.length() > 0 ? htmlEscape(deviceId.c_str()) : F("Not configured");
+    page += F("</p><p>Location: ");
+    page += location.length() > 0 ? htmlEscape(location.c_str()) : F("Not configured");
     page += F("</p>");
     page += F("<p>Status: ");
     page += connected ? F("Connected") : F("Not connected yet");
@@ -525,7 +698,7 @@ namespace
     page.reserve(320);
     page += F("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>TempHumid Wi-Fi</title></head><body>");
     page += F("<h1>Credentials Deleted</h1>");
-    page += F("<p>Saved SSID and password have been removed from EEPROM.</p>");
+    page += F("<p>Saved Wi-Fi and New Relic settings have been removed from EEPROM.</p>");
     page += F("<p><a href=\"/\">Back</a></p>");
     page += F("</body></html>");
 
@@ -542,6 +715,7 @@ namespace
     float temperature;
     float humidity;
     float pressure;
+    float altitude;
   };
 
   struct ComfortMetrics
@@ -593,6 +767,7 @@ namespace
   unsigned long delayTime = DEFAULT_DELAY_MS;
   unsigned long lastLoopMs = 0;
   unsigned long lastEdgePostMs = 0;
+  unsigned long lastNewRelicPostMs = 0;
 
   float computeSaturationVaporPressureCelsius(float tempC)
   {
@@ -678,6 +853,7 @@ namespace
     data.temperature = bme.readTemperature();
     data.humidity = bme.readHumidity() + credentialStorage.humidityOffset;
     data.pressure = bme.readPressure() / 100.0F;
+    data.altitude = bme.readAltitude(SEALEVELPRESSURE_HPA);
 
     // NaN検出 (センサーエラー時)
     if (isnan(data.temperature))
@@ -686,6 +862,8 @@ namespace
       data.humidity = 0.0f;
     if (isnan(data.pressure))
       data.pressure = 0.0f;
+    if (isnan(data.altitude))
+      data.altitude = 0.0f;
 
     return data;
   }
@@ -831,6 +1009,88 @@ namespace
 
     return status >= 200 && status < 300;
   }
+
+  bool newRelicSettingsAvailable()
+  {
+    return credentialStorage.deviceId[0] != '\0' &&
+           isAllowedLocation(credentialStorage.location) &&
+           credentialStorage.ingestKey[0] != '\0';
+  }
+
+  bool newRelicMetricsValid(const SensorData &data, const ComfortMetrics &metrics)
+  {
+    return isfinite(data.temperature) &&
+           isfinite(data.humidity) &&
+           isfinite(data.pressure) &&
+           isfinite(data.altitude) &&
+           isfinite(metrics.absoluteHumidity) &&
+           isfinite(metrics.vaporPressureDeficit) &&
+           isfinite(metrics.wbgt) &&
+           isfinite(metrics.comfortIndex);
+  }
+
+  bool buildNewRelicPayload(const SensorData &data, const ComfortMetrics &metrics,
+                            char *payload, size_t payloadSize, size_t &payloadLength)
+  {
+    const time_t timestamp = time(nullptr);
+    const int written = snprintf(
+        payload, payloadSize,
+        "[{\"common\":{\"timestamp\":%lld,\"attributes\":{\"deviceId\":\"%s\",\"location\":\"%s\",\"sensor\":\"%s\"}},"
+        "\"metrics\":[{\"name\":\"home.weather.temperature\",\"type\":\"gauge\",\"value\":%.1f},"
+        "{\"name\":\"home.weather.humidity\",\"type\":\"gauge\",\"value\":%.1f},"
+        "{\"name\":\"home.weather.absoluteHumidity\",\"type\":\"gauge\",\"value\":%.1f},"
+        "{\"name\":\"home.weather.pressure\",\"type\":\"gauge\",\"value\":%.1f},"
+        "{\"name\":\"home.weather.altitude\",\"type\":\"gauge\",\"value\":%.1f},"
+        "{\"name\":\"home.weather.vpd\",\"type\":\"gauge\",\"value\":%.2f},"
+        "{\"name\":\"home.weather.wbgt\",\"type\":\"gauge\",\"value\":%.1f},"
+        "{\"name\":\"home.weather.discomfortIndex\",\"type\":\"gauge\",\"value\":%.1f}]}]",
+        static_cast<long long>(timestamp), credentialStorage.deviceId, credentialStorage.location,
+        SENSOR_NAME, data.temperature, data.humidity, metrics.absoluteHumidity, data.pressure,
+        data.altitude, metrics.vaporPressureDeficit, metrics.wbgt, metrics.comfortIndex);
+
+    if (written < 0 || static_cast<size_t>(written) >= payloadSize)
+    {
+      payloadLength = 0;
+      return false;
+    }
+
+    payloadLength = static_cast<size_t>(written);
+    return true;
+  }
+
+  bool postNewRelicData(const SensorData &data, const ComfortMetrics &metrics)
+  {
+    const time_t timestamp = time(nullptr);
+    if (!newRelicSettingsAvailable() || WiFi.status() != WL_CONNECTED || !timeSynced ||
+        timestamp == EPOCH_UNINITIALIZED || !newRelicMetricsValid(data, metrics))
+    {
+      return false;
+    }
+
+    char payload[1152];
+    size_t payloadLength = 0;
+    if (!buildNewRelicPayload(data, metrics, payload, sizeof(payload), payloadLength))
+    {
+      return false;
+    }
+
+    NetworkClientSecure client;
+    client.setCACert(DIGICERT_GLOBAL_ROOT_G2);
+
+    HTTPClient http;
+    http.setTimeout(NEW_RELIC_POST_TIMEOUT_MS);
+    if (!http.begin(client, NEW_RELIC_URL))
+    {
+      return false;
+    }
+
+    http.addHeader("Content-Type", "application/json");
+    http.addHeader("Api-Key", credentialStorage.ingestKey);
+    const int status = http.POST(reinterpret_cast<uint8_t *>(payload), payloadLength);
+    http.end();
+
+    return status >= 200 && status < 300;
+  }
 } // namespace
 
 void initializeSensors()
@@ -969,6 +1229,12 @@ void loop()
     {
       postClimateData(data, metrics);
       lastEdgePostMs = nowMs;
+    }
+
+    if ((nowMs - lastNewRelicPostMs) >= NEW_RELIC_POST_INTERVAL_MS)
+    {
+      postNewRelicData(data, metrics);
+      lastNewRelicPostMs = nowMs;
     }
   }
 }
