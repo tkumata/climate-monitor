@@ -28,7 +28,6 @@ constexpr uint8_t OLED_I2C_ADDRESS = 0x3C;
 
 // Sensor (BME280)
 #define USEIIC 0 // use SPI by default
-#define SEALEVELPRESSURE_HPA (1013.25)
 #if (!USEIIC)
 constexpr uint8_t SPI_SCK = 13;
 constexpr uint8_t SPI_MISO = 12;
@@ -58,13 +57,22 @@ constexpr size_t MAX_DEVICE_ID_LENGTH = 32;
 constexpr size_t MAX_LOCATION_LENGTH = 9;
 constexpr size_t MAX_INGEST_KEY_LENGTH = 64;
 constexpr uint32_t LEGACY_CREDENTIAL_MAGIC = 0x54484D45;
-constexpr uint32_t CREDENTIAL_MAGIC = 0x54484D46;
+constexpr uint32_t NEW_RELIC_CREDENTIAL_MAGIC = 0x54484D46;
+constexpr uint32_t SEA_LEVEL_CREDENTIAL_MAGIC = 0x54484D47;
+constexpr uint32_t CREDENTIAL_MAGIC = 0x54484D48;
 constexpr char EDGE_SERVER_URL[] = "http://192.168.10.103:8081/api/climate/save";
 constexpr unsigned long EDGE_POST_INTERVAL_MS = 15UL * 60UL * 1000UL;
 constexpr unsigned long EDGE_POST_TIMEOUT_MS = 5000UL;
 constexpr char NEW_RELIC_URL[] = "https://metric-api.newrelic.com/metric/v1";
 constexpr unsigned long NEW_RELIC_POST_INTERVAL_MS = 5UL * 60UL * 1000UL;
 constexpr unsigned long NEW_RELIC_POST_TIMEOUT_MS = 5000UL;
+constexpr char JMA_AMEDAS_URL_FORMAT[] = "https://www.jma.go.jp/bosai/amedas/data/point/44132/%04d%02d%02d_12.json";
+constexpr unsigned long JMA_HTTP_TIMEOUT_MS = 8000UL;
+constexpr unsigned long JMA_RETRY_INTERVAL_MS = 60UL * 60UL * 1000UL;
+constexpr uint8_t JMA_FETCH_HOUR_JST = 13;
+constexpr float JMA_PRESSURE_MIN_HPA = 850.0f;
+constexpr float JMA_PRESSURE_MAX_HPA = 1100.0f;
+constexpr char JMA_SEA_LEVEL_FIELD[] = "\"normalPressure\":[";
 constexpr char SENSOR_NAME[] = "BME280";
 constexpr char LOCATION_HOME[] = "home";
 constexpr char LOCATION_APARTMENT[] = "apartment";
@@ -94,6 +102,28 @@ pLiaWN0bfVKfjllDiIGknibVb63dDcY3fe0Dkhvld1927jyNxF1WW6LZZm6zNTfl
 MrY=
 -----END CERTIFICATE-----)EOF";
 
+constexpr char GLOBALSIGN_ROOT_R3[] PROGMEM = R"EOF(-----BEGIN CERTIFICATE-----
+MIIDXzCCAkegAwIBAgILBAAAAAABIVhTCKIwDQYJKoZIhvcNAQELBQAwTDEgMB4
+GA1UECxMXR2xvYmFsU2lnbiBSb290IENBIC0gUjMxEzARBgNVBAoTCkdsb2JhbF
+NpZ24xEzARBgNVBAMTCkdsb2JhbFNpZ24wHhcNMDkwMzE4MTAwMDAwWhcNMjkw
+MzE4MTAwMDAwWjBMMSAwHgYDVQQLExdHbG9iYWxTaWduIFJvb3QgQ0EgLSBSMzET
+MBEGA1UEChMKR2xvYmFsU2lnbjETMBEGA1UEAxMKR2xvYmFsU2lnbjCCASIwDQY
+JKoZIhvcNAQEBBQADggEPADCCAQoCggEBAMwldpB5BngiFvXAg7aEyiie/QV2Ec
+WtiHL8RgJDx7KKnQRfJMsuS+FggkbhUqsMgUdwbN1k0ev1LKMPgj0MK66X17YUh
+hB5uzsTgHeMCOFJ0mpiLx9e+pZo34knlTifBtc+ycsmWQ1z3rDI6SYOgxXG71uL
+0gRgykmmKPZpO/bLyCiR5Z2KYVc3rHQU3HTgOu5yLy6c+9C7v/U9AOEGM+iCK65
+TpjoWc4zdQQ4gOsC0p6Hpsk+QLjJg6VfLuQSSaGjlOCZgdbKfd/+RFO+uIEn8rU
+AVSNECMWEZXriX7613t2Saer9fwRPvm2L7DWzgVGkWqQPabumDk3F2xmmFghcCA
+wEAAaNCMEAwDgYDVR0PAQH/BAQDAgEGMA8GA1UdEwEB/wQFMAMBAf8wHQYDVR0O
+BBYEFI/wS3+oLkUkrk1Q+mOai97i3Ru8MA0GCSqGSIb3DQEBCwUAA4IBAQBLQNv
+AUKr+yAzv95ZURUm7lgAJQayzE4aGKAczymvmdLm6AC2upArT9fHxD4q/c2dKg8
+dEe3jgr25sbwMpjjM5RcOO5LlXbKr8EpbsU8Yt5CRsuZRj+9xTaGdWPoO4zzUhw
+8lo/s7awlOqzJCK6fBdRoyV3XpYKBovHd7NADdBj+1EbddTKJd+82cEHhXXipa0
+095MJ6RMG3NzdvQXmcIfeg7jLQitChws/zyrVQ4PkX4268NXSb7hLi18YIvDQVE
+TI53O9zJrlAGomecsMx86OyXShkDOOyyGeMlhLxS67ttVb9+E7gUJTb0o2HLO02
+JQZR7rkpeDMdmztcpHWD9f
+-----END CERTIFICATE-----)EOF";
+
 // PROGMEM strings for web server
 constexpr char HTTP_HEADER_HTML[] PROGMEM = "text/html";
 constexpr char HTTP_HEADER_PLAIN[] PROGMEM = "text/plain";
@@ -114,6 +144,31 @@ struct LegacyCredentialStorage
   float humidityOffset;
 };
 
+struct NewRelicCredentialStorage
+{
+  uint32_t magic;
+  char ssid[MAX_SSID_LENGTH + 1];
+  char password[MAX_PASSWORD_LENGTH + 1];
+  float humidityOffset;
+  char deviceId[MAX_DEVICE_ID_LENGTH + 1];
+  char location[MAX_LOCATION_LENGTH + 1];
+  char ingestKey[MAX_INGEST_KEY_LENGTH + 1];
+};
+
+struct SeaLevelCredentialStorage
+{
+  uint32_t magic;
+  char ssid[MAX_SSID_LENGTH + 1];
+  char password[MAX_PASSWORD_LENGTH + 1];
+  float humidityOffset;
+  char deviceId[MAX_DEVICE_ID_LENGTH + 1];
+  char location[MAX_LOCATION_LENGTH + 1];
+  char ingestKey[MAX_INGEST_KEY_LENGTH + 1];
+  float seaLevelPressureHpa;
+  uint32_t seaLevelPressureDate;
+  uint32_t jmaAttemptDate;
+};
+
 struct CredentialStorage
 {
   uint32_t magic;
@@ -123,6 +178,9 @@ struct CredentialStorage
   char deviceId[MAX_DEVICE_ID_LENGTH + 1];
   char location[MAX_LOCATION_LENGTH + 1];
   char ingestKey[MAX_INGEST_KEY_LENGTH + 1];
+  float seaLevelPressureHpa;
+  uint32_t seaLevelPressureDate;
+  float altitude;
 };
 
 constexpr size_t EEPROM_SIZE = sizeof(CredentialStorage);
@@ -286,6 +344,41 @@ namespace
       EEPROM.get(0, credentialStorage);
       terminateCredentialStrings(credentialStorage);
     }
+    else if (storedMagic == SEA_LEVEL_CREDENTIAL_MAGIC)
+    {
+      SeaLevelCredentialStorage previousCredentials{};
+      EEPROM.get(0, previousCredentials);
+
+      memset(&credentialStorage, 0, sizeof(credentialStorage));
+      memcpy(&credentialStorage, &previousCredentials, sizeof(previousCredentials));
+      credentialStorage.magic = CREDENTIAL_MAGIC;
+      credentialStorage.altitude = NAN;
+      terminateCredentialStrings(credentialStorage);
+      EEPROM.put(0, credentialStorage);
+      EEPROM.commit();
+    }
+    else if (storedMagic == NEW_RELIC_CREDENTIAL_MAGIC)
+    {
+      NewRelicCredentialStorage previousCredentials{};
+      EEPROM.get(0, previousCredentials);
+      previousCredentials.ssid[MAX_SSID_LENGTH] = '\0';
+      previousCredentials.password[MAX_PASSWORD_LENGTH] = '\0';
+      previousCredentials.deviceId[MAX_DEVICE_ID_LENGTH] = '\0';
+      previousCredentials.location[MAX_LOCATION_LENGTH] = '\0';
+      previousCredentials.ingestKey[MAX_INGEST_KEY_LENGTH] = '\0';
+
+      memset(&credentialStorage, 0, sizeof(credentialStorage));
+      credentialStorage.magic = CREDENTIAL_MAGIC;
+      memcpy(credentialStorage.ssid, previousCredentials.ssid, sizeof(credentialStorage.ssid));
+      memcpy(credentialStorage.password, previousCredentials.password, sizeof(credentialStorage.password));
+      credentialStorage.humidityOffset = previousCredentials.humidityOffset;
+      memcpy(credentialStorage.deviceId, previousCredentials.deviceId, sizeof(credentialStorage.deviceId));
+      memcpy(credentialStorage.location, previousCredentials.location, sizeof(credentialStorage.location));
+      memcpy(credentialStorage.ingestKey, previousCredentials.ingestKey, sizeof(credentialStorage.ingestKey));
+      credentialStorage.altitude = NAN;
+      EEPROM.put(0, credentialStorage);
+      EEPROM.commit();
+    }
     else if (storedMagic == LEGACY_CREDENTIAL_MAGIC)
     {
       LegacyCredentialStorage legacyCredentials{};
@@ -298,6 +391,7 @@ namespace
       memcpy(credentialStorage.ssid, legacyCredentials.ssid, sizeof(credentialStorage.ssid));
       memcpy(credentialStorage.password, legacyCredentials.password, sizeof(credentialStorage.password));
       credentialStorage.humidityOffset = legacyCredentials.humidityOffset;
+      credentialStorage.altitude = NAN;
       EEPROM.put(0, credentialStorage);
       EEPROM.commit();
     }
@@ -305,6 +399,7 @@ namespace
     {
       memset(&credentialStorage, 0, sizeof(credentialStorage));
       credentialStorage.humidityOffset = 0.0f; // Default offset
+      credentialStorage.altitude = NAN;
     }
 
     initialized = true;
@@ -500,6 +595,146 @@ namespace
     }
 
     timeSynced = syncTimeFromNtp();
+  }
+
+  uint32_t dateKey(const struct tm &date)
+  {
+    return static_cast<uint32_t>(date.tm_year + 1900) * 10000UL +
+           static_cast<uint32_t>(date.tm_mon + 1) * 100UL +
+           static_cast<uint32_t>(date.tm_mday);
+  }
+
+  float computeAltitude(float temperatureC, float pressureHpa, float seaLevelPressureHpa);
+
+  bool parseSeaLevelPressure(const char *valueText, const char *qualityText, float &pressureHpa)
+  {
+    char *end = nullptr;
+    const float value = strtof(valueText, &end);
+    if (end == valueText || *end != '\0')
+    {
+      return false;
+    }
+    char *qualityEnd = nullptr;
+    const long quality = strtol(qualityText, &qualityEnd, 10);
+    if (qualityEnd == qualityText || *qualityEnd != '\0' || (quality != 0 && quality != 1))
+    {
+      return false;
+    }
+    if (!isfinite(value) || value < JMA_PRESSURE_MIN_HPA || value > JMA_PRESSURE_MAX_HPA)
+    {
+      return false;
+    }
+    pressureHpa = value;
+    return true;
+  }
+
+  bool saveAltitudeToEeprom(float pressureHpa, uint32_t sourceDate, float altitude)
+  {
+    CredentialStorage nextCredentials = credentialStorage;
+    nextCredentials.magic = CREDENTIAL_MAGIC;
+    nextCredentials.seaLevelPressureHpa = pressureHpa;
+    nextCredentials.seaLevelPressureDate = sourceDate;
+    nextCredentials.altitude = altitude;
+    EEPROM.put(0, nextCredentials);
+    if (!EEPROM.commit())
+    {
+      return false;
+    }
+    credentialStorage = nextCredentials;
+    return true;
+  }
+
+  bool fetchTokyoSeaLevelPressure(const struct tm &sourceDate, float &pressureHpa)
+  {
+    char expectedTimestamp[20];
+    snprintf(expectedTimestamp, sizeof(expectedTimestamp), "\"%04d%02d%02d120000\"",
+             sourceDate.tm_year + 1900, sourceDate.tm_mon + 1, sourceDate.tm_mday);
+    char url[128];
+    snprintf(url, sizeof(url), JMA_AMEDAS_URL_FORMAT,
+             sourceDate.tm_year + 1900, sourceDate.tm_mon + 1, sourceDate.tm_mday);
+
+    NetworkClientSecure client;
+    client.setCACert(GLOBALSIGN_ROOT_R3);
+    client.setTimeout(JMA_HTTP_TIMEOUT_MS);
+
+    HTTPClient http;
+    http.setTimeout(JMA_HTTP_TIMEOUT_MS);
+    if (!http.begin(client, url))
+    {
+      return false;
+    }
+
+    const int status = http.GET();
+    if (status != HTTP_CODE_OK)
+    {
+      http.end();
+      return false;
+    }
+
+    NetworkClient *stream = http.getStreamPtr();
+    char valueText[16];
+    char qualityText[4];
+    bool parsed = false;
+    if (stream != nullptr &&
+        stream->find(expectedTimestamp) &&
+        stream->find(JMA_SEA_LEVEL_FIELD))
+    {
+      const size_t valueLength = stream->readBytesUntil(',', valueText, sizeof(valueText) - 1);
+      valueText[valueLength] = '\0';
+      const size_t qualityLength = stream->readBytesUntil(']', qualityText, sizeof(qualityText) - 1);
+      qualityText[qualityLength] = '\0';
+      parsed = valueLength < sizeof(valueText) - 1 && qualityLength < sizeof(qualityText) - 1 &&
+               parseSeaLevelPressure(valueText, qualityText, pressureHpa);
+    }
+    http.end();
+    return parsed;
+  }
+
+  void ensureDailyAltitude()
+  {
+    static unsigned long lastAttemptMs = 0;
+    if (!timeSynced || WiFi.status() != WL_CONNECTED || !bmeAvailable)
+    {
+      return;
+    }
+
+    struct tm now;
+    if (!getLocalTime(&now, 0))
+    {
+      return;
+    }
+
+    const uint32_t today = dateKey(now);
+    if (credentialStorage.seaLevelPressureDate == today && isfinite(credentialStorage.altitude))
+    {
+      return;
+    }
+
+    if (now.tm_hour < JMA_FETCH_HOUR_JST)
+    {
+      return;
+    }
+
+    const unsigned long nowMs = millis();
+    if (lastAttemptMs != 0 && (nowMs - lastAttemptMs) < JMA_RETRY_INTERVAL_MS)
+    {
+      return;
+    }
+    lastAttemptMs = nowMs;
+
+    float pressureHpa = 0.0f;
+    if (!fetchTokyoSeaLevelPressure(now, pressureHpa))
+    {
+      return;
+    }
+
+    const float temperatureC = bme.readTemperature();
+    const float measuredPressureHpa = bme.readPressure() / 100.0f;
+    const float altitude = computeAltitude(temperatureC, measuredPressureHpa, pressureHpa);
+    if (isfinite(altitude))
+    {
+      saveAltitudeToEeprom(pressureHpa, today, altitude);
+    }
   }
 
   void appendLocationOption(String &page, const char *location)
@@ -698,7 +933,7 @@ namespace
     page.reserve(320);
     page += F("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>TempHumid Wi-Fi</title></head><body>");
     page += F("<h1>Credentials Deleted</h1>");
-    page += F("<p>Saved Wi-Fi and New Relic settings have been removed from EEPROM.</p>");
+    page += F("<p>Saved Wi-Fi, New Relic, and weather settings have been removed from EEPROM.</p>");
     page += F("<p><a href=\"/\">Back</a></p>");
     page += F("</body></html>");
 
@@ -735,14 +970,15 @@ namespace
   constexpr uint8_t LEFT_WBGT_Y = 32;
   constexpr uint8_t LEFT_DI_Y = 48;
   constexpr uint8_t RIGHT_PRESSURE_Y = 16;
-  constexpr uint8_t RIGHT_HUMIDITY_Y = 28;
-  constexpr uint8_t RIGHT_ABSOLUTE_HUMIDITY_Y = 40;
+  constexpr uint8_t RIGHT_ALTITUDE_Y = 25;
+  constexpr uint8_t RIGHT_HUMIDITY_Y = 34;
+  constexpr uint8_t RIGHT_ABSOLUTE_HUMIDITY_Y = 43;
   constexpr uint8_t RIGHT_VPD_Y = 52;
   constexpr uint8_t DIVIDER_LINE_X = 78;
   constexpr uint8_t DATE_Y = 8;
   constexpr uint8_t HEAT_INDEX_Y = 36;
   constexpr size_t DATE_BUFFER_SIZE = 21; // フォーマット長(20) + 終端
-  constexpr uint8_t DIVIDER_LINE_TOP_Y = 24;
+  constexpr uint8_t DIVIDER_LINE_TOP_Y = 16;
   constexpr uint8_t DIVIDER_LINE_BOTTOM_Y = 64;
   constexpr float KELVIN_OFFSET = 273.15f;
   constexpr float ABS_HUMID_NUMERATOR = 216.7f;
@@ -763,6 +999,8 @@ namespace
   constexpr float WBGT_WET_BULB_LOW_C = -50.0f;
   constexpr float WBGT_WET_BULB_WEIGHT = 0.7f;
   constexpr float WBGT_DRY_BULB_WEIGHT = 0.3f;
+  constexpr float ALTITUDE_EXPONENT = 1.0f / 5.257f;
+  constexpr float ALTITUDE_LAPSE_RATE = 0.0065f;
 
   unsigned long delayTime = DEFAULT_DELAY_MS;
   unsigned long lastLoopMs = 0;
@@ -847,13 +1085,25 @@ namespace
     return metrics;
   }
 
+  float computeAltitude(float temperatureC, float pressureHpa, float seaLevelPressureHpa)
+  {
+    if (!isfinite(temperatureC) || !isfinite(pressureHpa) || pressureHpa <= 0.0f ||
+        !isfinite(seaLevelPressureHpa) || seaLevelPressureHpa < JMA_PRESSURE_MIN_HPA ||
+        seaLevelPressureHpa > JMA_PRESSURE_MAX_HPA)
+    {
+      return NAN;
+    }
+    return (powf(seaLevelPressureHpa / pressureHpa, ALTITUDE_EXPONENT) - 1.0f) *
+           (temperatureC + KELVIN_OFFSET) / ALTITUDE_LAPSE_RATE;
+  }
+
   SensorData readSensorData()
   {
     SensorData data;
     data.temperature = bme.readTemperature();
     data.humidity = bme.readHumidity() + credentialStorage.humidityOffset;
     data.pressure = bme.readPressure() / 100.0F;
-    data.altitude = bme.readAltitude(SEALEVELPRESSURE_HPA);
+    data.altitude = credentialStorage.altitude;
 
     // NaN検出 (センサーエラー時)
     if (isnan(data.temperature))
@@ -862,9 +1112,6 @@ namespace
       data.humidity = 0.0f;
     if (isnan(data.pressure))
       data.pressure = 0.0f;
-    if (isnan(data.altitude))
-      data.altitude = 0.0f;
-
     return data;
   }
 
@@ -937,6 +1184,17 @@ namespace
     oled.setCursor(COL_RIGHT_X, RIGHT_PRESSURE_Y);
     oled.print(data.pressure, 0);
     oled.print("hPa");
+
+    oled.setCursor(COL_RIGHT_X, RIGHT_ALTITUDE_Y);
+    if (isfinite(data.altitude))
+    {
+      oled.print(data.altitude, 0);
+    }
+    else
+    {
+      oled.print("--");
+    }
+    oled.print('m');
 
     oled.setCursor(COL_RIGHT_X, RIGHT_HUMIDITY_Y);
     oled.print(data.humidity, 1);
@@ -1194,6 +1452,7 @@ void loop()
   configServer.handleClient();
   ensureWifiConnection();
   ensureTimeSync();
+  ensureDailyAltitude();
 
   // 非ブロッキング遅延
   const unsigned long now = millis();
