@@ -1,5 +1,23 @@
 # 気象観測・New Relic 仕様
 
+## SoftAP・設定 Web 認証
+
+| Item | Value |
+| --- | --- |
+| SoftAP SSID | `ESP32AP` |
+| SoftAP security | WPA2-PSK |
+| Access key | Hardware-random 12 lowercase letters or digits, persisted in EEPROM |
+| Web username | `admin` |
+| Web authentication | HTTP Digest, realm `Climate Monitor` |
+| Web interfaces | SoftAP and STA |
+| OLED guidance | First 120 seconds after boot |
+
+アクセスキーには小文字と数字から紛らわしい `l`、`o`、`0`、`1` を除いた32文字を使用し、各文字を5bitの乱数から選ぶ。ソースコード、MAC アドレス、他の保存資格情報から導出しない。
+
+`/`、`POST /save`、`POST /clear`、未定義パスを含むすべての HTTP リクエストで Digest 認証を先に検証する。POST は認証後に既存の CSRF トークンを検証する。保存済み Wi-Fi パスワードと Ingest Key は HTML に含めず、各入力が空の場合は保存値を維持する。
+
+設定削除では Wi-Fi、湿度補正、New Relic、気象データを消去するが、アクセスキーは維持する。STA 側アクセスは HTTP 本文を暗号化しないため、信頼できる LAN でのみ使用する。
+
 ## 設定項目
 
 | Item | Input | Validation | Persistence |
@@ -47,7 +65,7 @@ altitude =
 
 ## EEPROM マイグレーション
 
-現在の保存構造へ `seaLevelPressureHpa`、`seaLevelPressureDate`、`altitude` を保持し、magic を更新する。直前の海面気圧対応構造を含む既存形式から SSID、パスワード、湿度補正値、deviceId、location、Ingest Key を維持して移行する。
+現在の保存構造へ `accessKey` を追加して magic を更新する。直前の標高対応構造を含む既存形式から SSID、パスワード、湿度補正値、deviceId、location、Ingest Key、海面気圧、対象日、標高を維持して移行し、アクセスキーだけを新規生成する。
 
 日付は `YYYYMMDD` の整数で保存する。取得と計算に成功した場合だけ海面気圧、`seaLevelPressureDate`、標高を一括更新する。設定 Web UI から資格情報を保存する場合は取得済み値を維持する。
 

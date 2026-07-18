@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <math.h>
 #include <cstring>
+#include <esp_random.h>
 
 // OLED
 #include <Adafruit_GFX.h>
@@ -51,6 +52,11 @@ constexpr uint8_t NTP_MAX_SYNC_ATTEMPTS = 5; // 最大同期試行回数
 constexpr char TZ_JST[] = "JST-9";
 constexpr time_t EPOCH_UNINITIALIZED = 0;
 constexpr char AP_SSID[] = "ESP32AP";
+constexpr char WEB_USERNAME[] = "admin";
+constexpr char WEB_REALM[] = "Climate Monitor";
+constexpr char ACCESS_KEY_ALPHABET[] = "abcdefghijkmnpqrstuvwxyz23456789";
+constexpr size_t ACCESS_KEY_LENGTH = 12;
+constexpr unsigned long ACCESS_INFO_DISPLAY_MS = 120000UL;
 constexpr size_t MAX_SSID_LENGTH = 32;
 constexpr size_t MAX_PASSWORD_LENGTH = 64;
 constexpr size_t MAX_DEVICE_ID_LENGTH = 32;
@@ -59,7 +65,8 @@ constexpr size_t MAX_INGEST_KEY_LENGTH = 64;
 constexpr uint32_t LEGACY_CREDENTIAL_MAGIC = 0x54484D45;
 constexpr uint32_t NEW_RELIC_CREDENTIAL_MAGIC = 0x54484D46;
 constexpr uint32_t SEA_LEVEL_CREDENTIAL_MAGIC = 0x54484D47;
-constexpr uint32_t CREDENTIAL_MAGIC = 0x54484D48;
+constexpr uint32_t ALTITUDE_CREDENTIAL_MAGIC = 0x54484D48;
+constexpr uint32_t CREDENTIAL_MAGIC = 0x54484D49;
 constexpr char EDGE_SERVER_URL[] = "http://192.168.10.103:8081/api/climate/save";
 constexpr unsigned long EDGE_POST_INTERVAL_MS = 15UL * 60UL * 1000UL;
 constexpr unsigned long EDGE_POST_TIMEOUT_MS = 5000UL;
@@ -169,6 +176,20 @@ struct SeaLevelCredentialStorage
   uint32_t jmaAttemptDate;
 };
 
+struct AltitudeCredentialStorage
+{
+  uint32_t magic;
+  char ssid[MAX_SSID_LENGTH + 1];
+  char password[MAX_PASSWORD_LENGTH + 1];
+  float humidityOffset;
+  char deviceId[MAX_DEVICE_ID_LENGTH + 1];
+  char location[MAX_LOCATION_LENGTH + 1];
+  char ingestKey[MAX_INGEST_KEY_LENGTH + 1];
+  float seaLevelPressureHpa;
+  uint32_t seaLevelPressureDate;
+  float altitude;
+};
+
 struct CredentialStorage
 {
   uint32_t magic;
@@ -181,6 +202,7 @@ struct CredentialStorage
   float seaLevelPressureHpa;
   uint32_t seaLevelPressureDate;
   float altitude;
+  char accessKey[ACCESS_KEY_LENGTH + 1];
 };
 
 constexpr size_t EEPROM_SIZE = sizeof(CredentialStorage);
@@ -222,6 +244,7 @@ namespace
   bool wifiDisconnected = false;
   uint8_t ntpSyncAttempts = 0;
   String csrfToken;
+  unsigned long accessInfoStartedMs = 0;
 
   void onWiFiEvent(WiFiEvent_t event)
   {
@@ -325,6 +348,32 @@ namespace
     credentials.deviceId[MAX_DEVICE_ID_LENGTH] = '\0';
     credentials.location[MAX_LOCATION_LENGTH] = '\0';
     credentials.ingestKey[MAX_INGEST_KEY_LENGTH] = '\0';
+    credentials.accessKey[ACCESS_KEY_LENGTH] = '\0';
+  }
+
+  bool isValidAccessKey(const char *accessKey)
+  {
+    if (strlen(accessKey) != ACCESS_KEY_LENGTH)
+    {
+      return false;
+    }
+    for (size_t i = 0; i < ACCESS_KEY_LENGTH; ++i)
+    {
+      if (strchr(ACCESS_KEY_ALPHABET, accessKey[i]) == nullptr)
+      {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  void generateAccessKey(char *accessKey)
+  {
+    for (size_t i = 0; i < ACCESS_KEY_LENGTH; ++i)
+    {
+      accessKey[i] = ACCESS_KEY_ALPHABET[esp_random() & 0x1f];
+    }
+    accessKey[ACCESS_KEY_LENGTH] = '\0';
   }
 
   void initCredentialStorage()
@@ -339,10 +388,22 @@ namespace
 
     uint32_t storedMagic = 0;
     EEPROM.get(0, storedMagic);
+    bool needsCommit = false;
     if (storedMagic == CREDENTIAL_MAGIC)
     {
       EEPROM.get(0, credentialStorage);
       terminateCredentialStrings(credentialStorage);
+    }
+    else if (storedMagic == ALTITUDE_CREDENTIAL_MAGIC)
+    {
+      AltitudeCredentialStorage previousCredentials{};
+      EEPROM.get(0, previousCredentials);
+
+      memset(&credentialStorage, 0, sizeof(credentialStorage));
+      memcpy(&credentialStorage, &previousCredentials, sizeof(previousCredentials));
+      credentialStorage.magic = CREDENTIAL_MAGIC;
+      terminateCredentialStrings(credentialStorage);
+      needsCommit = true;
     }
     else if (storedMagic == SEA_LEVEL_CREDENTIAL_MAGIC)
     {
@@ -354,8 +415,7 @@ namespace
       credentialStorage.magic = CREDENTIAL_MAGIC;
       credentialStorage.altitude = NAN;
       terminateCredentialStrings(credentialStorage);
-      EEPROM.put(0, credentialStorage);
-      EEPROM.commit();
+      needsCommit = true;
     }
     else if (storedMagic == NEW_RELIC_CREDENTIAL_MAGIC)
     {
@@ -376,8 +436,7 @@ namespace
       memcpy(credentialStorage.location, previousCredentials.location, sizeof(credentialStorage.location));
       memcpy(credentialStorage.ingestKey, previousCredentials.ingestKey, sizeof(credentialStorage.ingestKey));
       credentialStorage.altitude = NAN;
-      EEPROM.put(0, credentialStorage);
-      EEPROM.commit();
+      needsCommit = true;
     }
     else if (storedMagic == LEGACY_CREDENTIAL_MAGIC)
     {
@@ -392,14 +451,26 @@ namespace
       memcpy(credentialStorage.password, legacyCredentials.password, sizeof(credentialStorage.password));
       credentialStorage.humidityOffset = legacyCredentials.humidityOffset;
       credentialStorage.altitude = NAN;
-      EEPROM.put(0, credentialStorage);
-      EEPROM.commit();
+      needsCommit = true;
     }
     else
     {
       memset(&credentialStorage, 0, sizeof(credentialStorage));
+      credentialStorage.magic = CREDENTIAL_MAGIC;
       credentialStorage.humidityOffset = 0.0f; // Default offset
       credentialStorage.altitude = NAN;
+      needsCommit = true;
+    }
+
+    if (!isValidAccessKey(credentialStorage.accessKey))
+    {
+      generateAccessKey(credentialStorage.accessKey);
+      needsCommit = true;
+    }
+    if (needsCommit)
+    {
+      EEPROM.put(0, credentialStorage);
+      EEPROM.commit();
     }
 
     initialized = true;
@@ -416,11 +487,14 @@ namespace
     CredentialStorage nextCredentials = credentialStorage;
     nextCredentials.magic = CREDENTIAL_MAGIC;
     memset(nextCredentials.ssid, 0, sizeof(nextCredentials.ssid));
-    memset(nextCredentials.password, 0, sizeof(nextCredentials.password));
     memset(nextCredentials.deviceId, 0, sizeof(nextCredentials.deviceId));
     memset(nextCredentials.location, 0, sizeof(nextCredentials.location));
     ssid.toCharArray(nextCredentials.ssid, sizeof(nextCredentials.ssid));
-    password.toCharArray(nextCredentials.password, sizeof(nextCredentials.password));
+    if (password.length() > 0)
+    {
+      memset(nextCredentials.password, 0, sizeof(nextCredentials.password));
+      password.toCharArray(nextCredentials.password, sizeof(nextCredentials.password));
+    }
     nextCredentials.humidityOffset = humidOffset;
     deviceId.toCharArray(nextCredentials.deviceId, sizeof(nextCredentials.deviceId));
     location.toCharArray(nextCredentials.location, sizeof(nextCredentials.location));
@@ -454,6 +528,9 @@ namespace
   bool clearCredentialsFromEeprom()
   {
     CredentialStorage emptyCredentials{};
+    emptyCredentials.magic = CREDENTIAL_MAGIC;
+    emptyCredentials.altitude = NAN;
+    memcpy(emptyCredentials.accessKey, credentialStorage.accessKey, sizeof(emptyCredentials.accessKey));
     EEPROM.put(0, emptyCredentials);
     if (!EEPROM.commit())
     {
@@ -466,7 +543,18 @@ namespace
   void startAccessPoint()
   {
     WiFi.mode(WIFI_AP_STA);
-    WiFi.softAP(AP_SSID);
+    WiFi.softAP(AP_SSID, credentialStorage.accessKey);
+  }
+
+  bool authenticateConfigRequest()
+  {
+    if (configServer.header(F("Authorization")).startsWith(configServer.AuthTypeDigest) &&
+        configServer.authenticate(WEB_USERNAME, credentialStorage.accessKey))
+    {
+      return true;
+    }
+    configServer.requestAuthentication(DIGEST_AUTH, WEB_REALM);
+    return false;
   }
 
   void handleRoot();
@@ -754,6 +842,10 @@ namespace
   void handleRoot()
   {
     initCredentialStorage();
+    if (!authenticateConfigRequest())
+    {
+      return;
+    }
 
     // CSRFトークンを生成
     csrfToken = generateCsrfToken();
@@ -765,8 +857,8 @@ namespace
     page += csrfToken;
     page += F("\"><label>SSID<input type=\"text\" name=\"ssid\" maxlength=\"32\" required value=\"");
     page += htmlEscape(credentialStorage.ssid);
-    page += F("\"></label><label>Password<input type=\"password\" name=\"password\" maxlength=\"64\" value=\"");
-    page += htmlEscape(credentialStorage.password);
+    page += F("\"></label><label>Password<input type=\"password\" name=\"password\" maxlength=\"64\" autocomplete=\"new-password\" placeholder=\"");
+    page += credentialStorage.password[0] != '\0' ? F("Configured (leave blank to keep)") : F("Not configured");
     page += F("\"></label><label>Humidity Offset (%)<input type=\"number\" step=\"0.1\" name=\"humid_offset\" value=\"");
     page += String(credentialStorage.humidityOffset, 1);
     page += F("\"></label><h2>New Relic Settings</h2><label>Device ID<input type=\"text\" name=\"device_id\" maxlength=\"32\" pattern=\"[A-Za-z0-9]+\" value=\"");
@@ -818,6 +910,10 @@ namespace
   void handleSave()
   {
     initCredentialStorage();
+    if (!authenticateConfigRequest())
+    {
+      return;
+    }
 
     // CSRFトークンチェック
     if (!configServer.hasArg("csrf") || configServer.arg("csrf") != csrfToken)
@@ -912,6 +1008,10 @@ namespace
   void handleClear()
   {
     initCredentialStorage();
+    if (!authenticateConfigRequest())
+    {
+      return;
+    }
 
     // CSRFトークンチェック
     if (!configServer.hasArg("csrf") || configServer.arg("csrf") != csrfToken)
@@ -942,6 +1042,10 @@ namespace
 
   void handleNotFound()
   {
+    if (!authenticateConfigRequest())
+    {
+      return;
+    }
     configServer.send(404, FPSTR(HTTP_HEADER_PLAIN), FPSTR(ERR_NOT_FOUND));
   }
 
@@ -1425,6 +1529,30 @@ void displaySensorError()
   oled.display();
 }
 
+bool accessInfoVisible()
+{
+  return (millis() - accessInfoStartedMs) < ACCESS_INFO_DISPLAY_MS;
+}
+
+void displayAccessInfo()
+{
+  if (!oledAvailable)
+  {
+    return;
+  }
+
+  oled.clearDisplay();
+  oled.setTextSize(1);
+  oled.setTextColor(WHITE);
+  oled.setCursor(0, 0);
+  oled.println(F("AP: ESP32AP"));
+  oled.println(F("PASS:"));
+  oled.println(credentialStorage.accessKey);
+  oled.println(F("URL: 192.168.4.1"));
+  oled.println(F("USER: admin"));
+  oled.display();
+}
+
 void setup()
 {
   // WiFiイベントハンドラーを登録
@@ -1445,6 +1573,8 @@ void setup()
 
   // センサー初期化（非ブロッキング）
   initializeSensors();
+  accessInfoStartedMs = millis();
+  displayAccessInfo();
 }
 
 void loop()
@@ -1468,7 +1598,14 @@ void loop()
     initializeSensors();
     if (!bmeAvailable && sensorInitRetries >= SENSOR_INIT_MAX_RETRIES)
     {
-      displaySensorError();
+      if (accessInfoVisible())
+      {
+        displayAccessInfo();
+      }
+      else
+      {
+        displaySensorError();
+      }
       return;
     }
   }
@@ -1480,7 +1617,14 @@ void loop()
 
     if (oledAvailable)
     {
-      renderWeatherScreen(data, metrics); // scrubRandomPixel()とdisplay()は内部で呼ばれる
+      if (accessInfoVisible())
+      {
+        displayAccessInfo();
+      }
+      else
+      {
+        renderWeatherScreen(data, metrics); // scrubRandomPixel()とdisplay()は内部で呼ばれる
+      }
     }
 
     const unsigned long nowMs = millis();
