@@ -1095,14 +1095,6 @@ namespace
   constexpr float DISCOMFORT_RH_TEMP_COEFF = 0.99f;
   constexpr float DISCOMFORT_TEMP_OFFSET = 14.3f;
   constexpr float DISCOMFORT_CONSTANT = 46.3f;
-  constexpr float WBGT_SATURATION_COEFF_A = 17.62f;
-  constexpr float WBGT_SATURATION_COEFF_B = 243.12f;
-  constexpr float WBGT_PSYCHROMETRIC_COEFF = 0.00066f;
-  constexpr float WBGT_PSYCHROMETRIC_TEMP_COEFF = 0.00115f;
-  constexpr uint8_t WBGT_BISECTION_ITERATIONS = 50;
-  constexpr float WBGT_WET_BULB_LOW_C = -50.0f;
-  constexpr float WBGT_WET_BULB_WEIGHT = 0.7f;
-  constexpr float WBGT_DRY_BULB_WEIGHT = 0.3f;
   constexpr float ALTITUDE_EXPONENT = 1.0f / 5.257f;
   constexpr float ALTITUDE_LAPSE_RATE = 0.0065f;
 
@@ -1136,47 +1128,18 @@ namespace
     return discomfortIndex;
   }
 
-  float computeWbgtSaturationVaporPressureHpa(float tempC)
+  float computeIndoorWbgt(float tempC, float relativeHumidity)
   {
-    const float exponent = (WBGT_SATURATION_COEFF_A * tempC) / (WBGT_SATURATION_COEFF_B + tempC);
-    return SATURATION_BASE * expf(exponent);
-  }
-
-  float computeWetBulbTemperature(float tempC, float relativeHumidity, float pressureHpa)
-  {
-    const float humidity = constrain(relativeHumidity, 0.0f, 100.0f);
-    const float actualVaporPressure = (humidity / 100.0f) * computeWbgtSaturationVaporPressureHpa(tempC);
-    float low = WBGT_WET_BULB_LOW_C;
-    float high = tempC;
-
-    for (uint8_t iteration = 0; iteration < WBGT_BISECTION_ITERATIONS; ++iteration)
-    {
-      const float wetBulbC = (low + high) / 2.0f;
-      const float psychrometricCoefficient = WBGT_PSYCHROMETRIC_COEFF * (1.0f + WBGT_PSYCHROMETRIC_TEMP_COEFF * wetBulbC) * pressureHpa;
-      const float estimatedVaporPressure = computeWbgtSaturationVaporPressureHpa(wetBulbC) - psychrometricCoefficient * (tempC - wetBulbC);
-
-      if (estimatedVaporPressure > actualVaporPressure)
-      {
-        high = wetBulbC;
-      }
-      else
-      {
-        low = wetBulbC;
-      }
-    }
-
-    return (low + high) / 2.0f;
-  }
-
-  float computeIndoorWbgt(float tempC, float relativeHumidity, float pressureHpa)
-  {
-    if (!isfinite(tempC) || !isfinite(relativeHumidity) || !isfinite(pressureHpa) || pressureHpa <= 0.0f)
+    if (!isfinite(tempC) || !isfinite(relativeHumidity))
     {
       return NAN;
     }
 
-    const float wetBulbC = computeWetBulbTemperature(tempC, relativeHumidity, pressureHpa);
-    return WBGT_WET_BULB_WEIGHT * wetBulbC + WBGT_DRY_BULB_WEIGHT * tempC;
+    const float humidity = constrain(relativeHumidity, 0.0f, 100.0f);
+    const float wetBulbC = tempC * atanf(0.151977f * sqrtf(humidity + 8.313659f)) +
+                           atanf(tempC + humidity) - atanf(humidity - 1.676331f) +
+                           0.00391838f * humidity * sqrtf(humidity) * atanf(0.023101f * humidity) - 4.686035f;
+    return 0.7f * wetBulbC + 0.3f * tempC;
   }
 
   ComfortMetrics computeComfortMetrics(const SensorData &data)
@@ -1185,7 +1148,7 @@ namespace
     metrics.absoluteHumidity = computeAbsoluteHumidity(data.temperature, data.humidity);
     metrics.vaporPressureDeficit = computeVpdKPa(data.temperature, data.humidity);
     metrics.comfortIndex = computeComfortIndex(data.temperature, data.humidity);
-    metrics.wbgt = computeIndoorWbgt(data.temperature, data.humidity, data.pressure);
+    metrics.wbgt = computeIndoorWbgt(data.temperature, data.humidity);
     return metrics;
   }
 

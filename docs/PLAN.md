@@ -1,57 +1,40 @@
-# SoftAP・設定 Web 認証計画
+# WBGT Stull 近似式への変更計画
 
 ## 目的
 
-端末固有のアクセスキーで SoftAP と設定 Web サーバーを保護し、保存済み秘密情報を設定ページへ再表示しない。
+気温と相対湿度から Stull の近似式で湿球温度を求め、屋内 WBGT を算出する。
 
 ## フェーズ
 
-### Phase 1: 仕様更新
+### Phase 1: 契約更新
 
-- SoftAP、Digest 認証、アクセスキー保存、STA 側アクセスの要件を定義する。
-- 現行 ADR を退避し、新しいセキュリティ ADR を作成する。
-
-状態: 完了
-
-### Phase 2: アクセスキーと SoftAP
-
-- 小文字と数字からなる12文字の端末固有アクセスキーを生成して EEPROM に保存する。
-- 現行 EEPROM 形式から全設定値を維持して移行する。
-- SoftAP を WPA2-PSK で起動する。
+- 要件、仕様、設計、README、ADR を Stull の近似式へ同期する。
+- 現行 ADR を `ADR-007-softap-web-authentication.md` へ退避し、ADR-008 を作成する。
 
 状態: 完了
 
-### Phase 3: Web 認証
+### Phase 2: 実装
 
-- SoftAP 側と STA 側の全ルートへ Digest 認証を適用する。
-- Wi-Fi パスワードを再表示せず、空欄なら保存値を維持する。
-- 既存の CSRF 検証を維持する。
-
-状態: 完了
-
-### Phase 4: OLED 表示
-
-- 起動後120秒間、SoftAP SSID、アクセスキー、URL、Web ユーザー名を表示する。
-- 120秒後に通常表示へ戻す。
+- `computeIndoorWbgt()` を Stull の湿球温度近似式へ置き換える。
+- 気圧、湿球温度、二分法にだけ使うコードを削除する。
+- OLED と New Relic の既存データ経路を維持する。
 
 状態: 完了
 
-### Phase 5: 検証
+### Phase 3: 検証
 
-- セキュリティ自己検証と既存自己検証を実行する。
+- 代表入力に対する湿球温度と WBGT の自己検証を実行する。
 - `git diff --check` を実行する。
 - `arduino-cli compile --fqbn esp32:esp32:nano_nora .` を実行する。
-- SoftAP、Digest 認証、STA 側アクセス、OLED を実機確認する。
+- 実機で OLED の WBGT 表示を確認する。
 
-状態: 自己検証、既存自己検証、`git diff --check`、Nano ESP32 向けコンパイルは完了。実機確認は未実施。
+状態: 自己検証、`git diff --check`、Nano ESP32 向けコンパイルは完了。実機確認は未実施。
 
 ## 成功基準
 
-- passphrase なしでは SoftAP に接続できない。
-- SoftAP 側と STA 側の未認証 HTTP リクエストが `401` になる。
-- 認証後も不正な CSRF トークンの POST が `403` になる。
-- 再起動と設定削除の後も同じアクセスキーを使用できる。
-- 現行 EEPROM の全設定値を失わずに移行する。
-- 保存済み Wi-Fi パスワードと Ingest Key を HTML に含めない。
-- Nano ESP32 向けコンパイルが成功する。
-- 実機で SoftAP、SoftAP/STA 両側の Web 認証、OLED 表示を確認できる。
+- 湿球温度が指定された Stull の近似式で算出される。
+- WBGT が `0.7 × 湿球温度 + 0.3 × 気温` で算出される。
+- WBGT 計算に気圧と反復処理を使用しない。
+- OLED と New Relic が同じ `ComfortMetrics.wbgt` を使用する。
+- 自己検証、差分検査、Nano ESP32 向けコンパイルが成功する。
+- 実機で WBGT 表示を確認できる。
