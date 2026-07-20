@@ -1,4 +1,4 @@
-# ADR-008: WBGT に Stull の湿球温度近似式を採用する
+# ADR-009: Grafana Cloud OTLP endpoint へ端末から直接送信する
 
 ## 状態
 
@@ -6,24 +6,18 @@
 
 ## 背景
 
-従来は気圧を使って湿球温度を二分法で求め、屋内 WBGT を算出していた。WBGT の算出方法を、気温と相対湿度だけを使う Stull の湿球温度近似式へ変更する。
+New Relic へ送信している気象メトリクスを Grafana Cloud でも利用する。Grafana API Key は秘密情報であり、ファームウェアへ固定せず端末ごとに設定できる必要がある。
 
 ## 決定
 
-相対湿度を 0〜100% に制限し、次式で湿球温度と WBGT を算出する。
+端末から Grafana Cloud の OTLP/HTTP metrics endpoint へ5分間隔で JSON を直接送信する。New Relic と同じ deviceId、location、sensor 属性と8個の gauge 値を使い、NTP 同期済み Unix 時刻をナノ秒へ変換する。
 
-```text
-Tw = T × atan(0.151977 × sqrt(RH + 8.313659))
-     + atan(T + RH) - atan(RH - 1.676331)
-     + 0.00391838 × RH^(3/2) × atan(0.023101 × RH) - 4.686035
-WBGT = 0.7 × Tw + 0.3 × T
-```
-
-気圧と反復計算は使用しない。OLED と New Relic は共通の算出結果を使用する。
+Grafana API Key は設定 Web サーバーから EEPROM に保存する。Basic 認証は ESP32 `HTTPClient` の標準機能を使用し、Instance ID は接続先と同じ固定設定とする。TLS は検証を無効化せず、既存の DigiCert Global Root G2 を使用する。
 
 ## 結果
 
-- WBGT の入力が気温と相対湿度だけになる。
-- 固定 50 回の二分法と関連定数を削除できる。
-- 気圧が無効でも、気温と相対湿度が有限なら WBGT を算出できる。
-- 直射日光、放射熱、気流を考慮しない簡易推定値である。
+- New Relic と Grafana Cloud の両方で同じ計測値を利用できる。
+- 外部 Collector や追加ライブラリを必要としない。
+- JSON OTLP は低頻度の8メトリクスに限定する。
+- Grafana の OTLP 変換により、メトリクス名の `.` は保存時に `_` へ変換される。
+- endpoint、Instance ID、証明書チェーンの変更時はファームウェア更新が必要になる。

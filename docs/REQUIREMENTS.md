@@ -1,4 +1,4 @@
-# 気象観測・New Relic 要件
+# 気象観測・外部メトリクス送信要件
 
 ## 機能要件
 
@@ -24,6 +24,11 @@
 14. 算出した標高を OLED にメートル単位、小数なしで表示する。
 15. OLED と New Relic では、翌日の更新まで保存済み標高を使用する。
 16. 気温と相対湿度から Stull の近似式で湿球温度を求め、`0.7 × 湿球温度 + 0.3 × 気温` で WBGT を算出する。気圧は使用しない。
+17. Grafana Cloud OTLP metrics endpoint へ New Relic と同じ8個の値を HTTPS POST する。
+18. Grafana API Key を設定 Web サーバーから EEPROM に保存し、空欄保存では現在値を維持する。
+19. deviceId、location、Grafana API Key、Wi-Fi 接続、NTP 同期、有限な8個の値が揃う場合だけ Grafana 送信を試行する。
+20. Grafana の各データポイントへ deviceId、location、`sensor=BME280` を属性として設定する。
+21. Grafana 送信の失敗は New Relic と既存エッジサーバーの送信を妨げない。
 
 ## 気象庁データ取得要件
 
@@ -43,18 +48,19 @@
 - アクセスキーはハードウェア乱数から初回に1回だけ生成して EEPROM に保存し、再起動と設定削除の後も維持する。
 - 設定 Web サーバーは SoftAP 側と STA 側の両方から利用可能とし、全ルートでユーザー名 `admin` とアクセスキーによる HTTP Digest 認証を要求する。
 - 未認証リクエストでは設定内容を返さない。
-- 保存済み Wi-Fi パスワードと Ingest Key は設定ページへ再表示しない。空欄で保存した場合はそれぞれの保存値を維持する。
+- 保存済み Wi-Fi パスワード、New Relic Ingest Key、Grafana API Key は設定ページへ再表示しない。空欄で保存した場合はそれぞれの保存値を維持する。
 - 起動後120秒間、OLED に SoftAP SSID、アクセスキー、URL、Web ユーザー名を表示する。
-- New Relic と気象庁の TLS サーバー証明書を検証し、検証を無効化しない。
+- New Relic、Grafana Cloud、気象庁の TLS サーバー証明書を検証し、検証を無効化しない。
 - Ingest Key は設定ページへ保存値を再表示しない。
 - Ingest Key を OLED、シリアル出力、HTTP 応答本文、New Relic JSON 本文へ出力しない。
+- Grafana API Key を OLED、シリアル出力、HTTP 応答本文、OTLP JSON 本文へ出力しない。
 - 設定 POST は既存の CSRF 検証を維持する。
 - 全入力を固定長バッファへ収まる長さに制限する。
 - STA 側の設定 Web 通信は平文 HTTP であり、信頼できるローカル LAN 内からの不正操作防止を対象とする。LAN 内の盗聴対策は対象外とする。
 
 ## 非機能要件
 
-- New Relic 送信間隔は 5 分とする。既存エッジサーバーの送信間隔は 15 分のまま維持する。
+- New Relic と Grafana Cloud の送信間隔はそれぞれ 5 分とする。既存エッジサーバーの送信間隔は 15 分のまま維持する。
 - 反復経路に不要な抽象化や依存ライブラリを追加しない。
 - OLED のヘッダーと左列の気温、WBGT、DI を維持する。
 - BME280 ライブラリの固定基準気圧による高度取得は使用しない。

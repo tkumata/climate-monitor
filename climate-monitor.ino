@@ -62,17 +62,23 @@ constexpr size_t MAX_PASSWORD_LENGTH = 64;
 constexpr size_t MAX_DEVICE_ID_LENGTH = 32;
 constexpr size_t MAX_LOCATION_LENGTH = 9;
 constexpr size_t MAX_INGEST_KEY_LENGTH = 64;
+constexpr size_t MAX_GRAFANA_API_KEY_LENGTH = 256;
 constexpr uint32_t LEGACY_CREDENTIAL_MAGIC = 0x54484D45;
 constexpr uint32_t NEW_RELIC_CREDENTIAL_MAGIC = 0x54484D46;
 constexpr uint32_t SEA_LEVEL_CREDENTIAL_MAGIC = 0x54484D47;
 constexpr uint32_t ALTITUDE_CREDENTIAL_MAGIC = 0x54484D48;
-constexpr uint32_t CREDENTIAL_MAGIC = 0x54484D49;
+constexpr uint32_t ACCESS_CREDENTIAL_MAGIC = 0x54484D49;
+constexpr uint32_t CREDENTIAL_MAGIC = 0x54484D4A;
 constexpr char EDGE_SERVER_URL[] = "http://192.168.10.103:8081/api/climate/save";
 constexpr unsigned long EDGE_POST_INTERVAL_MS = 15UL * 60UL * 1000UL;
 constexpr unsigned long EDGE_POST_TIMEOUT_MS = 5000UL;
 constexpr char NEW_RELIC_URL[] = "https://metric-api.newrelic.com/metric/v1";
 constexpr unsigned long NEW_RELIC_POST_INTERVAL_MS = 5UL * 60UL * 1000UL;
 constexpr unsigned long NEW_RELIC_POST_TIMEOUT_MS = 5000UL;
+constexpr char GRAFANA_OTLP_URL[] = "https://otlp-gateway-prod-ap-northeast-0.grafana.net/otlp/v1/metrics";
+constexpr char GRAFANA_INSTANCE_ID[] = "1726789";
+constexpr unsigned long GRAFANA_POST_INTERVAL_MS = 5UL * 60UL * 1000UL;
+constexpr unsigned long GRAFANA_POST_TIMEOUT_MS = 5000UL;
 constexpr char JMA_AMEDAS_URL_FORMAT[] = "https://www.jma.go.jp/bosai/amedas/data/point/44132/%04d%02d%02d_12.json";
 constexpr unsigned long JMA_HTTP_TIMEOUT_MS = 8000UL;
 constexpr unsigned long JMA_RETRY_INTERVAL_MS = 60UL * 60UL * 1000UL;
@@ -191,6 +197,22 @@ struct AltitudeCredentialStorage
 };
 
 struct CredentialStorage
+{
+  uint32_t magic;
+  char ssid[MAX_SSID_LENGTH + 1];
+  char password[MAX_PASSWORD_LENGTH + 1];
+  float humidityOffset;
+  char deviceId[MAX_DEVICE_ID_LENGTH + 1];
+  char location[MAX_LOCATION_LENGTH + 1];
+  char ingestKey[MAX_INGEST_KEY_LENGTH + 1];
+  float seaLevelPressureHpa;
+  uint32_t seaLevelPressureDate;
+  float altitude;
+  char accessKey[ACCESS_KEY_LENGTH + 1];
+  char grafanaApiKey[MAX_GRAFANA_API_KEY_LENGTH + 1];
+};
+
+struct AccessCredentialStorage
 {
   uint32_t magic;
   char ssid[MAX_SSID_LENGTH + 1];
@@ -349,6 +371,7 @@ namespace
     credentials.location[MAX_LOCATION_LENGTH] = '\0';
     credentials.ingestKey[MAX_INGEST_KEY_LENGTH] = '\0';
     credentials.accessKey[ACCESS_KEY_LENGTH] = '\0';
+    credentials.grafanaApiKey[MAX_GRAFANA_API_KEY_LENGTH] = '\0';
   }
 
   bool isValidAccessKey(const char *accessKey)
@@ -393,6 +416,18 @@ namespace
     {
       EEPROM.get(0, credentialStorage);
       terminateCredentialStrings(credentialStorage);
+    }
+    else if (storedMagic == ACCESS_CREDENTIAL_MAGIC)
+    {
+      AccessCredentialStorage previousCredentials{};
+      EEPROM.get(0, previousCredentials);
+
+      memset(&credentialStorage, 0, sizeof(credentialStorage));
+      memcpy(&credentialStorage, &previousCredentials, sizeof(previousCredentials));
+      credentialStorage.magic = CREDENTIAL_MAGIC;
+      credentialStorage.grafanaApiKey[0] = '\0';
+      terminateCredentialStrings(credentialStorage);
+      needsCommit = true;
     }
     else if (storedMagic == ALTITUDE_CREDENTIAL_MAGIC)
     {
@@ -482,7 +517,8 @@ namespace
   }
 
   bool saveCredentialsToEeprom(const String &ssid, const String &password, float humidOffset,
-                               const String &deviceId, const String &location, const String &ingestKey)
+                               const String &deviceId, const String &location, const String &ingestKey,
+                               const String &grafanaApiKey)
   {
     CredentialStorage nextCredentials = credentialStorage;
     nextCredentials.magic = CREDENTIAL_MAGIC;
@@ -503,6 +539,11 @@ namespace
       memset(nextCredentials.ingestKey, 0, sizeof(nextCredentials.ingestKey));
       ingestKey.toCharArray(nextCredentials.ingestKey, sizeof(nextCredentials.ingestKey));
     }
+    if (grafanaApiKey.length() > 0)
+    {
+      memset(nextCredentials.grafanaApiKey, 0, sizeof(nextCredentials.grafanaApiKey));
+      grafanaApiKey.toCharArray(nextCredentials.grafanaApiKey, sizeof(nextCredentials.grafanaApiKey));
+    }
 
     // 変更がない場合は書き込まない（EEPROM/Flash寿命対策）
     if (credentialStorage.magic == nextCredentials.magic &&
@@ -511,7 +552,8 @@ namespace
         abs(credentialStorage.humidityOffset - nextCredentials.humidityOffset) < 0.01f &&
         strcmp(credentialStorage.deviceId, nextCredentials.deviceId) == 0 &&
         strcmp(credentialStorage.location, nextCredentials.location) == 0 &&
-        strcmp(credentialStorage.ingestKey, nextCredentials.ingestKey) == 0)
+        strcmp(credentialStorage.ingestKey, nextCredentials.ingestKey) == 0 &&
+        strcmp(credentialStorage.grafanaApiKey, nextCredentials.grafanaApiKey) == 0)
     {
       return true; // 変更なし
     }
@@ -851,7 +893,7 @@ namespace
     csrfToken = generateCsrfToken();
 
     String page;
-    page.reserve(1400);
+    page.reserve(1700);
     page += F("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>TempHumid Wi-Fi</title><style>body{font-family:sans-serif;margin:24px;}form{display:flex;flex-direction:column;gap:12px;max-width:320px;margin-bottom:16px;}label{display:flex;flex-direction:column;font-weight:600;}input,select{padding:8px;font-size:16px;}button{padding:10px;font-size:16px;}button.danger{background:#c62828;color:#fff;border:none;}button.secondary{background:#f0f0f0;border:1px solid #ccc;}</style></head><body>");
     page += F("<h1>Wi-Fi Settings</h1><form method=\"POST\" action=\"/save\"><input type=\"hidden\" name=\"csrf\" value=\"");
     page += csrfToken;
@@ -870,6 +912,8 @@ namespace
     appendLocationOption(page, LOCATION_OFFICE);
     page += F("</select></label><label>Ingest Key<input type=\"password\" name=\"ingest_key\" maxlength=\"64\" autocomplete=\"new-password\" placeholder=\"");
     page += credentialStorage.ingestKey[0] != '\0' ? F("Configured (leave blank to keep)") : F("Not configured");
+    page += F("\"></label><h2>Grafana Settings</h2><label>API Key<input type=\"password\" name=\"grafana_api_key\" maxlength=\"256\" autocomplete=\"new-password\" placeholder=\"");
+    page += credentialStorage.grafanaApiKey[0] != '\0' ? F("Configured (leave blank to keep)") : F("Not configured");
     page += F("\"></label><button type=\"submit\">Save</button></form>");
 
     page += F("<form method=\"POST\" action=\"/clear\"><input type=\"hidden\" name=\"csrf\" value=\"");
@@ -933,11 +977,13 @@ namespace
     String deviceId = configServer.arg("device_id");
     String location = configServer.arg("location");
     String ingestKey = configServer.arg("ingest_key");
+    String grafanaApiKey = configServer.arg("grafana_api_key");
     ssid.trim();
     password.trim();
     deviceId.trim();
     location.trim();
     ingestKey.trim();
+    grafanaApiKey.trim();
 
     if (ssid.length() == 0)
     {
@@ -946,7 +992,8 @@ namespace
     }
 
     if (ssid.length() > MAX_SSID_LENGTH || password.length() > MAX_PASSWORD_LENGTH ||
-        ingestKey.length() > MAX_INGEST_KEY_LENGTH)
+        ingestKey.length() > MAX_INGEST_KEY_LENGTH ||
+        grafanaApiKey.length() > MAX_GRAFANA_API_KEY_LENGTH)
     {
       configServer.send(400, FPSTR(HTTP_HEADER_PLAIN), FPSTR(ERR_INPUT_TOO_LONG));
       return;
@@ -970,7 +1017,8 @@ namespace
       humidOffset = configServer.arg("humid_offset").toFloat();
     }
 
-    if (!saveCredentialsToEeprom(ssid, password, humidOffset, deviceId, location, ingestKey))
+    if (!saveCredentialsToEeprom(ssid, password, humidOffset, deviceId, location, ingestKey,
+                                 grafanaApiKey))
     {
       configServer.send(500, FPSTR(HTTP_HEADER_PLAIN), FPSTR(ERR_SAVE_FAILED));
       return;
@@ -1033,7 +1081,7 @@ namespace
     page.reserve(320);
     page += F("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>TempHumid Wi-Fi</title></head><body>");
     page += F("<h1>Credentials Deleted</h1>");
-    page += F("<p>Saved Wi-Fi, New Relic, and weather settings have been removed from EEPROM.</p>");
+    page += F("<p>Saved Wi-Fi, New Relic, Grafana, and weather settings have been removed from EEPROM.</p>");
     page += F("<p><a href=\"/\">Back</a></p>");
     page += F("</body></html>");
 
@@ -1102,6 +1150,7 @@ namespace
   unsigned long lastLoopMs = 0;
   unsigned long lastEdgePostMs = 0;
   unsigned long lastNewRelicPostMs = 0;
+  unsigned long lastGrafanaPostMs = 0;
 
   float computeSaturationVaporPressureCelsius(float tempC)
   {
@@ -1342,7 +1391,7 @@ namespace
            credentialStorage.ingestKey[0] != '\0';
   }
 
-  bool newRelicMetricsValid(const SensorData &data, const ComfortMetrics &metrics)
+  bool telemetryMetricsValid(const SensorData &data, const ComfortMetrics &metrics)
   {
     return isfinite(data.temperature) &&
            isfinite(data.humidity) &&
@@ -1387,7 +1436,7 @@ namespace
   {
     const time_t timestamp = time(nullptr);
     if (!newRelicSettingsAvailable() || WiFi.status() != WL_CONNECTED || !timeSynced ||
-        timestamp == EPOCH_UNINITIALIZED || !newRelicMetricsValid(data, metrics))
+        timestamp == EPOCH_UNINITIALIZED || !telemetryMetricsValid(data, metrics))
     {
       return false;
     }
@@ -1411,6 +1460,109 @@ namespace
 
     http.addHeader("Content-Type", "application/json");
     http.addHeader("Api-Key", credentialStorage.ingestKey);
+    const int status = http.POST(reinterpret_cast<uint8_t *>(payload), payloadLength);
+    http.end();
+
+    return status >= 200 && status < 300;
+  }
+
+  bool grafanaSettingsAvailable()
+  {
+    return credentialStorage.deviceId[0] != '\0' &&
+           isAllowedLocation(credentialStorage.location) &&
+           credentialStorage.grafanaApiKey[0] != '\0';
+  }
+
+  bool buildGrafanaPayload(const SensorData &data, const ComfortMetrics &metrics,
+                           char *payload, size_t payloadSize, size_t &payloadLength)
+  {
+    struct GrafanaMetric
+    {
+      const char *name;
+      double value;
+      int precision;
+    };
+
+    const GrafanaMetric grafanaMetrics[] = {
+        {"home.weather.temperature", data.temperature, 1},
+        {"home.weather.humidity", data.humidity, 1},
+        {"home.weather.absoluteHumidity", metrics.absoluteHumidity, 1},
+        {"home.weather.pressure", data.pressure, 1},
+        {"home.weather.altitude", data.altitude, 1},
+        {"home.weather.vpd", metrics.vaporPressureDeficit, 2},
+        {"home.weather.wbgt", metrics.wbgt, 1},
+        {"home.weather.discomfortIndex", metrics.comfortIndex, 1},
+    };
+    const long long timeUnixNano = static_cast<long long>(time(nullptr)) * 1000000000LL;
+
+    int written = snprintf(payload, payloadSize,
+                           "{\"resourceMetrics\":[{\"scopeMetrics\":[{\"metrics\":[");
+    if (written < 0 || static_cast<size_t>(written) >= payloadSize)
+    {
+      payloadLength = 0;
+      return false;
+    }
+
+    size_t used = static_cast<size_t>(written);
+    for (size_t i = 0; i < sizeof(grafanaMetrics) / sizeof(grafanaMetrics[0]); ++i)
+    {
+      written = snprintf(
+          payload + used, payloadSize - used,
+          "%s{\"name\":\"%s\",\"gauge\":{\"dataPoints\":[{\"timeUnixNano\":\"%lld\","
+          "\"asDouble\":%.*f,\"attributes\":["
+          "{\"key\":\"deviceId\",\"value\":{\"stringValue\":\"%s\"}},"
+          "{\"key\":\"location\",\"value\":{\"stringValue\":\"%s\"}},"
+          "{\"key\":\"sensor\",\"value\":{\"stringValue\":\"%s\"}}]}]}}",
+          i == 0 ? "" : ",", grafanaMetrics[i].name, timeUnixNano,
+          grafanaMetrics[i].precision, grafanaMetrics[i].value,
+          credentialStorage.deviceId, credentialStorage.location, SENSOR_NAME);
+      if (written < 0 || static_cast<size_t>(written) >= payloadSize - used)
+      {
+        payloadLength = 0;
+        return false;
+      }
+      used += static_cast<size_t>(written);
+    }
+
+    written = snprintf(payload + used, payloadSize - used, "]}]}]}");
+    if (written < 0 || static_cast<size_t>(written) >= payloadSize - used)
+    {
+      payloadLength = 0;
+      return false;
+    }
+
+    payloadLength = used + static_cast<size_t>(written);
+    return true;
+  }
+
+  bool postGrafanaData(const SensorData &data, const ComfortMetrics &metrics)
+  {
+    const time_t timestamp = time(nullptr);
+    if (!grafanaSettingsAvailable() || WiFi.status() != WL_CONNECTED || !timeSynced ||
+        timestamp == EPOCH_UNINITIALIZED || !telemetryMetricsValid(data, metrics))
+    {
+      return false;
+    }
+
+    static char payload[4096];
+    size_t payloadLength = 0;
+    if (!buildGrafanaPayload(data, metrics, payload, sizeof(payload), payloadLength))
+    {
+      return false;
+    }
+
+    NetworkClientSecure client;
+    client.setCACert(DIGICERT_GLOBAL_ROOT_G2);
+
+    HTTPClient http;
+    http.setTimeout(GRAFANA_POST_TIMEOUT_MS);
+    if (!http.begin(client, GRAFANA_OTLP_URL))
+    {
+      return false;
+    }
+
+    http.addHeader("Content-Type", "application/json");
+    http.setAuthorization(GRAFANA_INSTANCE_ID, credentialStorage.grafanaApiKey);
     const int status = http.POST(reinterpret_cast<uint8_t *>(payload), payloadLength);
     http.end();
 
@@ -1601,6 +1753,12 @@ void loop()
     {
       postNewRelicData(data, metrics);
       lastNewRelicPostMs = nowMs;
+    }
+
+    if ((nowMs - lastGrafanaPostMs) >= GRAFANA_POST_INTERVAL_MS)
+    {
+      postGrafanaData(data, metrics);
+      lastGrafanaPostMs = nowMs;
     }
   }
 }
