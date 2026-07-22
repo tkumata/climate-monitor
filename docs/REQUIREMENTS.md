@@ -29,6 +29,10 @@
 19. deviceId、location、Grafana API Key、Wi-Fi 接続、NTP 同期、有限な8個の値が揃う場合だけ Grafana 送信を試行する。
 20. Grafana の各データポイントへ deviceId、location、`sensor=BME280` を属性として設定する。
 21. Grafana 送信の失敗は New Relic と既存エッジサーバーの送信を妨げない。
+22. Grafana 送信条件を満たして生成した最新1件の OTLP JSON を RAM に保持し、次回生成時に上書きする。
+23. 最新 OTLP JSON を Digest 認証付き Web endpoint から取得できる。
+24. 最新 OTLP JSON の8個の値を、ラベルと単位を持つ Arc Gauge として Web 画面に表示する。
+25. Arc Gauge 画面は1分間隔で最新 OTLP JSON を再取得する。
 
 ## 気象庁データ取得要件
 
@@ -54,6 +58,7 @@
 - Ingest Key は設定ページへ保存値を再表示しない。
 - Ingest Key を OLED、シリアル出力、HTTP 応答本文、New Relic JSON 本文へ出力しない。
 - Grafana API Key を OLED、シリアル出力、HTTP 応答本文、OTLP JSON 本文へ出力しない。
+- 最新 OTLP JSON endpoint と Arc Gauge 画面でも既存の HTTP Digest 認証を要求する。
 - 設定 POST は既存の CSRF 検証を維持する。
 - 全入力を固定長バッファへ収まる長さに制限する。
 - STA 側の設定 Web 通信は平文 HTTP であり、信頼できるローカル LAN 内からの不正操作防止を対象とする。LAN 内の盗聴対策は対象外とする。
@@ -66,3 +71,5 @@
 - BME280 ライブラリの固定基準気圧による高度取得は使用しない。
 - 標高入力が有限値でない、測定気圧が 0 以下、海面気圧が不正な場合は保存値を更新しない。
 - 通信失敗後も設定 Web サーバー、OLED 更新、Wi-Fi 再接続を継続する。
+- 最新 OTLP JSON は EEPROM やファイルシステムへ保存せず、再起動時に消去する。
+- Arc Gauge は外部 JavaScript、CSS、フォント、チャートライブラリへ依存しない。

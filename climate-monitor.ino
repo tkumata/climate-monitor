@@ -79,6 +79,7 @@ constexpr char GRAFANA_OTLP_URL[] = "https://otlp-gateway-prod-ap-northeast-0.gr
 constexpr char GRAFANA_INSTANCE_ID[] = "1726789";
 constexpr unsigned long GRAFANA_POST_INTERVAL_MS = 5UL * 60UL * 1000UL;
 constexpr unsigned long GRAFANA_POST_TIMEOUT_MS = 5000UL;
+constexpr size_t GRAFANA_PAYLOAD_SIZE = 4096;
 constexpr char JMA_AMEDAS_URL_FORMAT[] = "https://www.jma.go.jp/bosai/amedas/data/point/44132/%04d%02d%02d_12.json";
 constexpr unsigned long JMA_HTTP_TIMEOUT_MS = 8000UL;
 constexpr unsigned long JMA_RETRY_INTERVAL_MS = 60UL * 60UL * 1000UL;
@@ -148,6 +149,80 @@ constexpr char ERR_INVALID_LOCATION[] PROGMEM = "Invalid location";
 constexpr char ERR_SAVE_FAILED[] PROGMEM = "Failed to save credentials";
 constexpr char ERR_CLEAR_FAILED[] PROGMEM = "Failed to clear credentials";
 constexpr char ERR_NOT_FOUND[] PROGMEM = "Not found";
+constexpr char WEATHER_PAGE[] PROGMEM = R"HTML(<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Climate Monitor</title>
+<style>
+:root{color-scheme:light dark;font-family:system-ui,sans-serif;background:#f4f7fb;color:#172033}body{margin:0;padding:24px}.shell{max-width:1100px;margin:auto}header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:24px}h1{font-size:clamp(1.5rem,4vw,2.25rem);margin:0 0 6px}.meta,.status{color:#5d687a;margin:0}.back{color:#2563eb;text-decoration:none}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:16px}.card{background:#fff;border:1px solid #dce3ed;border-radius:18px;padding:18px;box-shadow:0 8px 24px #16233a12;text-align:center}.card h2{font-size:1rem;margin:0;color:#445066}.gauge{display:block;width:100%;max-width:190px;margin:8px auto 0}.track,.arc{fill:none;stroke-width:12;stroke-linecap:round}.track{stroke:#dce3ed}.arc{transition:stroke-dasharray .4s ease}.reading{font-size:1.8rem;font-weight:750;margin-top:-14px}.unit{font-size:.9rem;font-weight:500;color:#687386}.range{display:flex;justify-content:space-between;color:#7a8494;font-size:.75rem;margin-top:8px}@media(prefers-color-scheme:dark){:root{background:#101725;color:#edf2f8}.card{background:#182234;border-color:#2d3a50}.card h2,.meta,.status,.unit,.range{color:#aeb9ca}.track{stroke:#344158}.back{color:#7db3ff}}
+</style>
+</head>
+<body>
+<main class="shell">
+<header><div><h1>最新の気象データ</h1><p id="meta" class="meta">Grafanaペイロードを確認しています</p></div><a class="back" href="/">設定へ戻る</a></header>
+<p id="status" class="status" role="status" aria-live="polite"></p>
+<section id="gauges" class="grid" aria-label="最新の気象計測値"></section>
+</main>
+<script>
+const definitions=[
+  {name:'home.weather.temperature',label:'気温',unit:'°C',min:-10,max:40,digits:1},
+  {name:'home.weather.humidity',label:'相対湿度',unit:'%RH',min:0,max:100,digits:1},
+  {name:'home.weather.absoluteHumidity',label:'絶対湿度',unit:'g/m³',min:0,max:30,digits:1},
+  {name:'home.weather.pressure',label:'気圧',unit:'hPa',min:950,max:1050,digits:1},
+  {name:'home.weather.altitude',label:'推定標高',unit:'m',min:-100,max:500,digits:1},
+  {name:'home.weather.vpd',label:'VPD',unit:'kPa',min:0,max:3,digits:2},
+  {name:'home.weather.wbgt',label:'WBGT',unit:'°C',min:0,max:40,digits:1},
+  {name:'home.weather.discomfortIndex',label:'不快指数',unit:'',min:40,max:100,digits:1}
+];
+const grid=document.getElementById('gauges');
+const meta=document.getElementById('meta');
+const statusText=document.getElementById('status');
+function colorFor(definition,value){
+  if(definition.name!=='home.weather.wbgt')return '#2563eb';
+  if(value>=31)return '#dc2626';
+  if(value>=28)return '#f97316';
+  if(value>=25)return '#eab308';
+  return '#16a34a';
+}
+function render(payload){
+  const metrics=payload.resourceMetrics?.[0]?.scopeMetrics?.[0]?.metrics??[];
+  const firstPoint=metrics[0]?.gauge?.dataPoints?.[0];
+  if(!firstPoint)throw new Error('有効な計測値がありません');
+  const attributes=Object.fromEntries((firstPoint.attributes??[]).map(attribute=>[attribute.key,attribute.value?.stringValue??'']));
+  grid.replaceChildren();
+  for(const definition of definitions){
+    const point=metrics.find(metric=>metric.name===definition.name)?.gauge?.dataPoints?.[0];
+    const value=Number(point?.asDouble);
+    if(!Number.isFinite(value))continue;
+    const percentage=Math.max(0,Math.min(100,(value-definition.min)*100/(definition.max-definition.min)));
+    const card=document.createElement('article');
+    card.className='card';
+    card.innerHTML=`<h2>${definition.label}</h2><svg class="gauge" viewBox="0 0 120 72" role="img" aria-label="${definition.label} ${value.toFixed(definition.digits)} ${definition.unit}"><path class="track" pathLength="100" d="M10 62 A50 50 0 0 1 110 62"/><path class="arc" pathLength="100" d="M10 62 A50 50 0 0 1 110 62" style="stroke:${colorFor(definition,value)};stroke-dasharray:${percentage} 100"/></svg><div class="reading">${value.toFixed(definition.digits)} <span class="unit">${definition.unit}</span></div><div class="range"><span>${definition.min}</span><span>${definition.max}</span></div>`;
+    grid.appendChild(card);
+  }
+  if(!grid.childElementCount)throw new Error('有効な計測値がありません');
+  const unixNano=String(firstPoint.timeUnixNano??'');
+  const measuredAt=unixNano.length>=13?new Date(Number(unixNano.slice(0,13))).toLocaleString('ja-JP'):'時刻不明';
+  meta.textContent=`${attributes.deviceId||'Device ID未設定'} · ${attributes.location||'Location未設定'} · ${attributes.sensor||'Sensor不明'} · ${measuredAt}`;
+  statusText.textContent='';
+}
+async function loadLatest(){
+  try{
+    const response=await fetch('/api/grafana/latest',{cache:'no-store'});
+    if(response.status===404)throw new Error('次のGrafana送信までデータはありません');
+    if(!response.ok)throw new Error(`取得に失敗しました (${response.status})`);
+    render(await response.json());
+  }catch(error){
+    statusText.textContent=error.message;
+  }
+}
+loadLatest();
+setInterval(loadLatest,60000);
+</script>
+</body>
+</html>)HTML";
 
 struct LegacyCredentialStorage
 {
@@ -602,11 +677,15 @@ namespace
   void handleRoot();
   void handleSave();
   void handleClear();
+  void handleWeather();
+  void handleLatestGrafanaPayload();
   void handleNotFound();
 
   void setupConfigServer()
   {
     configServer.on("/", HTTP_GET, handleRoot);
+    configServer.on("/weather", HTTP_GET, handleWeather);
+    configServer.on("/api/grafana/latest", HTTP_GET, handleLatestGrafanaPayload);
     configServer.on("/save", HTTP_POST, handleSave);
     configServer.on("/clear", HTTP_POST, handleClear);
     configServer.onNotFound(handleNotFound);
@@ -946,9 +1025,20 @@ namespace
     IPAddress apIp = WiFi.softAPIP();
     page += F("<p>AP IP: ");
     page += apIp.toString();
-    page += F("</p></body></html>");
+    page += F("</p><p><a href=\"/weather\">Latest Weather Gauges</a></p></body></html>");
 
     configServer.send(200, "text/html", page);
+  }
+
+  void handleWeather()
+  {
+    initCredentialStorage();
+    if (!authenticateConfigRequest())
+    {
+      return;
+    }
+
+    configServer.send_P(200, HTTP_HEADER_HTML, WEATHER_PAGE);
   }
 
   void handleSave()
@@ -1151,6 +1241,8 @@ namespace
   unsigned long lastEdgePostMs = 0;
   unsigned long lastNewRelicPostMs = 0;
   unsigned long lastGrafanaPostMs = 0;
+  char latestGrafanaPayload[GRAFANA_PAYLOAD_SIZE]{};
+  size_t latestGrafanaPayloadLength = 0;
 
   float computeSaturationVaporPressureCelsius(float tempC)
   {
@@ -1544,9 +1636,8 @@ namespace
       return false;
     }
 
-    static char payload[4096];
-    size_t payloadLength = 0;
-    if (!buildGrafanaPayload(data, metrics, payload, sizeof(payload), payloadLength))
+    if (!buildGrafanaPayload(data, metrics, latestGrafanaPayload,
+                             sizeof(latestGrafanaPayload), latestGrafanaPayloadLength))
     {
       return false;
     }
@@ -1563,10 +1654,31 @@ namespace
 
     http.addHeader("Content-Type", "application/json");
     http.setAuthorization(GRAFANA_INSTANCE_ID, credentialStorage.grafanaApiKey);
-    const int status = http.POST(reinterpret_cast<uint8_t *>(payload), payloadLength);
+    const int status = http.POST(reinterpret_cast<uint8_t *>(latestGrafanaPayload),
+                                 latestGrafanaPayloadLength);
     http.end();
 
     return status >= 200 && status < 300;
+  }
+
+  void handleLatestGrafanaPayload()
+  {
+    initCredentialStorage();
+    if (!authenticateConfigRequest())
+    {
+      return;
+    }
+
+    configServer.sendHeader(F("Cache-Control"), F("no-store"));
+    if (latestGrafanaPayloadLength == 0)
+    {
+      configServer.send(404, "application/json", F("{\"error\":\"No Grafana payload available\"}"));
+      return;
+    }
+
+    configServer.setContentLength(latestGrafanaPayloadLength);
+    configServer.send(200, "application/json", "");
+    configServer.sendContent(latestGrafanaPayload, latestGrafanaPayloadLength);
   }
 } // namespace
 
