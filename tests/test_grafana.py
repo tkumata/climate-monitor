@@ -16,4 +16,16 @@ assert source.count(r'\"key\":\"location\"') == 1
 assert source.count(r'\"key\":\"sensor\"') == 1
 assert "lastGrafanaPostMs" in source
 assert "GRAFANA_POST_INTERVAL_MS" in source
+assert "char latestGrafanaPayload[GRAFANA_PAYLOAD_SIZE]{};" in source
+assert "size_t latestGrafanaPayloadLength = 0;" in source
+assert "static char payload[4096]" not in source
+assert 'configServer.on("/weather", HTTP_GET, handleWeather);' in source
+assert 'configServer.on("/api/grafana/latest", HTTP_GET, handleLatestGrafanaPayload);' in source
+assert source.count("if (!authenticateConfigRequest())") >= 6
+assert "configServer.sendContent(latestGrafanaPayload, latestGrafanaPayloadLength);" in source
+assert "pathLength=\"100\"" in source
+assert "setInterval(loadLatest,60000);" in source
+assert "if(value>=31)" in source
+assert "if(value>=28)" in source
+assert "if(value>=25)" in source
 assert "glc_" not in source
